@@ -341,6 +341,113 @@ check('monthIndex/monthLabel 互逆',
   }
 }
 
+// 3.8 全库 x 随机参数的自洽性审计
+//     收益数字算错是"用户看不出来"的错误，所以这里不比对期望值，
+//     而是检查一堆必须成立的恒等式，任何一条破了都说明引擎内部不一致。
+{
+  // 固定种子的线性同余，保证每次跑的参数完全一样（可复现）
+  let seed = 20261016;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+
+  let cases = 0;
+  let violations = 0;
+  const details = [];
+  const sample = [...DB.stocks].sort(() => rnd() - 0.5).slice(0, 24);
+
+  for (const rec of sample) {
+    const series = decodeStockRecord(rec, DB.scale);
+    const stock = { ...rec, decodedSeries: series };
+    const firstMi = monthIndex(rec.first);
+    const lastMi = monthIndex(rec.last);
+    if (lastMi - firstMi < 3) continue;
+
+    for (let k = 0; k < 3; k++) {
+      const sMi = firstMi + Math.floor(rnd() * Math.max(1, lastMi - firstMi - 2));
+      const eMi = sMi + 1 + Math.floor(rnd() * (lastMi - sMi));
+      const amount = [1, 137, 1000, 3000, 20000, 123456][Math.floor(rnd() * 6)];
+      const feeEnabled = rnd() > 0.5;
+      let r;
+      try {
+        r = simulateFromParams(stock, {
+          startMonth: monthLabel(sMi), endMonth: monthLabel(eMi), amount,
+          feeEnabled, feeRate: 0.00025, feeMin: 5,
+        });
+      } catch (err) {
+        violations++;
+        details.push(`${rec.name} ${monthLabel(sMi)}~${monthLabel(eMi)} 抛错: ${err.message}`);
+        continue;
+      }
+      cases++;
+      const s = r.summary;
+      const bad = [];
+
+      // 恒等式 1：累计投入 = 各期投入之和
+      const sumAmount = r.trades.reduce((a, t) => a + t.amount, 0);
+      if (Math.abs(sumAmount - s.totalInvested) > 1e-6) bad.push(`投入不平 ${sumAmount} vs ${s.totalInvested}`);
+
+      // 恒等式 2：期末市值 = 期末份额 x 期末价 + 闲钱
+      if (Math.abs(s.finalShares * s.endPrice + s.idleCash - s.finalValue) > 1e-6) {
+        bad.push(`市值不平 ${s.finalShares * s.endPrice + s.idleCash} vs ${s.finalValue}`);
+      }
+
+      // 恒等式 3：盈亏 = 市值 - 投入
+      if (Math.abs(s.profit - (s.finalValue - s.totalInvested)) > 1e-6) bad.push('盈亏不平');
+
+      // 恒等式 4：收益率 = 盈亏 / 投入
+      if (Math.abs(s.totalReturn - s.profit / s.totalInvested) > 1e-9) bad.push('收益率不平');
+
+      // 恒等式 5：曲线的最后一个"期内"点必须等于期末结算值
+      const inPeriod = r.curve.filter((p) => p.inPeriod);
+      const lastPoint = inPeriod[inPeriod.length - 1];
+      if (!lastPoint) bad.push('曲线没有期内点');
+      else if (Math.abs(lastPoint.value - s.finalValue) > 1e-6) {
+        bad.push(`曲线末点 ${lastPoint.value} vs 期末市值 ${s.finalValue}`);
+      }
+
+      // 恒等式 6：IRR 反查 NPV ≈ 0（用引擎自己的现金流，核对自己的年化）
+      if (Number.isFinite(s.annualized) && s.totalInvested > 0 && s.finalValue > 0) {
+        const mRate = Math.pow(1 + s.annualized, 1 / 12) - 1;
+        const zeroMi = Math.min(...r.trades.map((t) => t.mi));
+        let npv = 0;
+        for (const t of r.trades) npv -= t.amount / Math.pow(1 + mRate, t.mi - zeroMi);
+        const lastMiUsed = Math.max(...r.trades.map((t) => t.mi));
+        npv += s.finalValue / Math.pow(1 + mRate, lastMiUsed - zeroMi);
+        // 放宽到 1e-4：多次折现的浮点累积误差
+        if (Math.abs(npv) > 1e-4) bad.push(`IRR 反查 NPV=${npv}`);
+      } else if (!(s.totalInvested > 0)) {
+        bad.push('累计投入非正');
+      }
+
+      // 恒等式 7：所有关键数字必须是有限数
+      for (const [kk, vv] of Object.entries(s)) {
+        if (typeof vv === 'number' && !Number.isFinite(vv) && kk !== 'annualized' && kk !== 'lumpy') {
+          // annualized 允许 NaN（极端亏损无解），其余不允许
+          bad.push(`${kk}=${vv}`);
+        }
+      }
+
+      // 恒等式 8：最大回撤必须在 [0,1]
+      if (!(s.maxDrawdown >= 0 && s.maxDrawdown <= 1)) bad.push(`回撤 ${s.maxDrawdown}`);
+
+      // 恒等式 9：开了手续费，市值不可能高于不开
+      if (feeEnabled) {
+        const noFee = simulateFromParams(stock, {
+          startMonth: monthLabel(sMi), endMonth: monthLabel(eMi), amount, feeEnabled: false,
+        });
+        if (s.finalValue > noFee.summary.finalValue + 1e-6) bad.push('开手续费后市值反而更高');
+      }
+
+      if (bad.length) {
+        violations++;
+        details.push(`${rec.name}(${rec.code}) ${s.startMonth}~${s.endMonth} 金额${amount}${feeEnabled ? '+费' : ''}: ${bad.join('; ')}`);
+      }
+    }
+  }
+
+  check(`全库随机参数自洽性审计（${cases} 个组合）`, violations === 0, details.slice(0, 6).join(' | '));
+  console.log(`     随机审计覆盖 ${sample.length} 只标的、${cases} 组参数，恒等式违反 ${violations} 次`);
+}
+
 // ── 4. 称号与成就 ──────────────────────────────────────────
 {
   const achMod = await import(pathToFileURL(path.join(DOCS, 'js', 'achievements.js')).href);
