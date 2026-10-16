@@ -65,6 +65,26 @@
       </div>
 
       <div class="field">
+        <label>截止月之后怎么处理？<span class="label-note">—— 这一点会改变年化收益率的算法</span></label>
+        <!--
+          这是一个真实的语义歧义：'定投到 2020-01' 既可以理解成"2020 年 1 月卖出离场"，
+          也可以理解成"2020 年 1 月停止扣款、股票继续拿着"。
+          两者期末市值和年化都不同，所以必须让用户明确选一个，不能替他默认。
+        -->
+        <div id="end-mode" class="segmented" role="radiogroup" aria-label="截止月的处理方式">
+          <button type="button" class="seg" data-mode="liquidate" role="radio" aria-checked="false">
+            <b>截止月全部卖出</b>
+            <i>区间到截止月为止，按当月收盘价结算离场</i>
+          </button>
+          <button type="button" class="seg" data-mode="hold" role="radio" aria-checked="false">
+            <b>停止定投后继续持有</b>
+            <i>截止月起不再扣款，持仓留到数据最新月份</i>
+          </button>
+        </div>
+        <div id="end-mode-note" class="hint"></div>
+      </div>
+
+      <div class="field">
         <label for="amount">每月定投金额（元）</label>
         <!--
           step 必须是 1（或 any），绝不能写 step="100" 配 min="1"：
@@ -130,6 +150,7 @@
           </div>
         </div>
         <p class="verdict" id="verdict"></p>
+        <div id="mode-banner" class="mode-banner"></div>
       </div>
 
       <div class="hero-grid">

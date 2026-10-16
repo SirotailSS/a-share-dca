@@ -30,10 +30,14 @@ const state = {
   stocks: [],
   stock: null,
   benchmark: null,
+  endMode: 'liquidate', // 'liquidate' 截止月卖出 | 'hold' 停止扣款继续持有
   lastResult: null,
   chart: null,
   recent: [],
 };
+
+// 把状态挂到 window 上，方便自动化测试与线上排查（只读用途，页面逻辑不依赖它）
+if (typeof window !== 'undefined') window.__DCA_STATE__ = state;
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => [...document.querySelectorAll(sel)];
@@ -73,6 +77,7 @@ async function init() {
   buildPicker();
   buildPresets();
   buildMonthSelects();
+  setEndMode('liquidate'); // 默认口径：截止月全部卖出（最无歧义的读法）
   restoreFromHash();
   bindEvents();
   run({ silent: true });
@@ -256,6 +261,7 @@ function clampMonthsToStock() {
   setMonth('end', end < start ? start : end);
   $('#range-note').textContent =
     `该标的可回测区间：${s.firstMonth} ~ ${s.lastMonth}`;
+  updateEndModeNote();
 }
 
 // ── 快捷预设 ────────────────────────────────────────────────
@@ -295,11 +301,41 @@ function readForm() {
   return {
     startMonth: getStartMonth(),
     endMonth: getEndMonth(),
+    endMode: state.endMode,
     amount: Number.isFinite(rawAmount) ? Math.min(Math.max(1, Math.round(rawAmount)), MAX_AMOUNT) : 0,
     feeEnabled: $('#fee-toggle').checked,
     feeRate: Math.max(0, Number($('#fee-rate').value) || 0) / 10000,
     feeMin: Math.max(0, Number($('#fee-min').value) || 0),
   };
+}
+
+/** 切换"截止月之后怎么处理"，并同步分段控件的选中态 */
+function setEndMode(mode) {
+  state.endMode = mode === 'hold' ? 'hold' : 'liquidate';
+  $$('#end-mode .seg').forEach((b) => {
+    const on = b.dataset.mode === state.endMode;
+    b.classList.toggle('active', on);
+    b.setAttribute('aria-checked', on ? 'true' : 'false');
+  });
+  updateEndModeNote();
+}
+
+/**
+ * 提示两种口径的差别。只有当截止月早于数据最新月份时才有区别；
+ * 若截止月已经是数据末尾，两种口径完全等价，要明确告诉用户别再纠结。
+ */
+function updateEndModeNote() {
+  const note = $('#end-mode-note');
+  const s = state.stock;
+  if (!s) { note.textContent = ''; return; }
+  const end = getEndMonth();
+  if (end >= s.lastMonth) {
+    note.textContent = `截止月已是数据最新月份（${s.lastMonth}），两种口径结果相同。`;
+    return;
+  }
+  note.textContent = state.endMode === 'hold'
+    ? `将在 ${end} 停止扣款，持仓一直算到 ${s.lastMonth} 的行情再结算（收益被摊到更长时间，年化通常更低）。`
+    : `将在 ${end} 按当月收盘价全部卖出结算，${end} 之后的涨跌与本次战绩无关。`;
 }
 
 // ── 事件绑定 ────────────────────────────────────────────────
@@ -310,8 +346,19 @@ function bindEvents() {
     e.preventDefault();
     run();
   });
+
+  // 截止月语义：两个分段按钮是 type=button，不会触发表单提交，单独绑定
+  $$('#end-mode .seg').forEach((btn) => {
+    btn.addEventListener('click', () => {
+      setEndMode(btn.dataset.mode);
+      run();
+    });
+  });
   for (const id of ['#start-year', '#start-month', '#end-year', '#end-month', '#fee-rate', '#fee-min']) {
-    $(id).addEventListener('change', () => run());
+    $(id).addEventListener('change', () => {
+      if (id.startsWith('#end-')) updateEndModeNote();
+      run();
+    });
   }
   $('#fee-toggle').addEventListener('change', () => {
     $('#fee-fields').classList.toggle('hidden', !$('#fee-toggle').checked);
@@ -449,20 +496,38 @@ function render(r, rank, ach, ctx, benchmarkAnnualized) {
   $('#hero-amount').textContent = `${money(s.monthlyAmount)} / 月`;
 
   // 一句话总结
+  const modeText = s.endMode === 'hold'
+    ? `到 <b>${s.investEndMonth}</b> 停止定投，持仓继续持有到 <b>${s.endMonth}</b> 结算`
+    : `到 <b>${s.endMonth}</b> 全部卖出结算`;
   $('#verdict').innerHTML =
-    `从 <b>${s.startMonth}</b> 到 <b>${s.endMonth}</b>，每月定投 <b>${money(s.monthlyAmount)}</b> 买入 <b>${ctx.stockName}（${ctx.stockCode}）</b>，` +
+    `从 <b>${s.startMonth}</b> 到 <b>${s.investEndMonth}</b>，每月定投 <b>${money(s.monthlyAmount)}</b> 买入 <b>${ctx.stockName}（${ctx.stockCode}）</b>，` +
+    `${modeText}；` +
     `累计投入 <b>${money(s.totalInvested)}</b>，期末市值 <b>${money(s.finalValue)}</b>，` +
     `<span class="${signClass(s.profit)}">总盈亏 ${s.profit >= 0 ? '+' : '−'}${fmtAmount(Math.abs(s.profit))}（${pct(s.totalReturn)}），年化 ${pct(s.annualized)}</span>。`;
+
+  // 截止口径的醒目提示（放在称号下方、主数字上方）
+  $('#mode-banner').innerHTML =
+    s.endMode === 'hold'
+      ? `📌 当前口径：<b>停止定投后继续持有</b> —— ${s.investEndMonth} 之后不再扣款，市值与年化算到 ${s.endMonth}。`
+      : `📌 当前口径：<b>截止月全部卖出</b> —— 按 ${s.endMonth} 的收盘价结算离场，之后的涨跌不计入。`;
 
   // 详细指标
   const rows = [
     ['定投期数', `${s.months} 期（${s.calendarMonths} 个自然月，约 ${s.years.toFixed(2)} 年）`],
+    ['扣款截止月', `${s.investEndMonth}（最后一笔定投）`],
+    ['结算口径', s.endMode === 'hold'
+      ? `停止定投后继续持有 → 按 <b>${s.endMonth}</b> 的行情结算`
+      : `截止月全部卖出 → 按 <b>${s.endMonth}</b> 的收盘价离场`],
     ['每月定投', `${money(s.monthlyAmount)}${ctx.feeEnabled ? '（含手续费）' : ''}`],
     ['累计投入', money(s.totalInvested)],
     ['期末市值', money(s.finalValue)],
     ['总盈亏', `<span class="${signClass(s.profit)}">${s.profit >= 0 ? '+' : '−'}${fmtAmount(Math.abs(s.profit))}</span>`],
     ['总收益率', `<span class="${signClass(s.profit)}">${pct(s.totalReturn)}</span>`],
     ['年化收益率（IRR）', `<span class="${signClass(s.annualized)}">${pct(s.annualized)}</span>`],
+    ...(s.altMonth && s.altMonth !== s.endMonth
+      ? [[s.endMode === 'hold' ? `若改成 ${s.investEndMonth} 卖出` : `若改成继续持有到 ${s.altMonth}`,
+          `市值 ${money(s.altValue)}，<span class="${signClass(s.altProfit)}">${pct(s.altReturn)}</span>　（另一种截止口径的对照）`]]
+      : []),
     ['同期标的涨幅', `<span class="${signClass(s.marketReturn)}">${pct(s.marketReturn)}</span>　（买入首月 ${s.firstPrice.toFixed(2)} → 期末 ${s.endPrice.toFixed(2)}）`],
     ['一口气全投（一次性买入）', `把全部 <b>${money(s.lumpInvested)}</b> 在首月一次买入 → ${money(s.lumpValue)}，<span class="${signClass(s.lumpProfit)}">${pct(s.lumpReturn)}</span>（年化 ${pct(s.lumpAnnualized)}）<br><span class="muted">⚠️ 这只是"同样总资金一把梭"的数学参照：它要求你在第一个月就拿出 ${money(s.totalInvested)}，相当于 <b>${s.months}</b> 个月的月供，实际很少有人做得到；而按 ${money(s.monthlyAmount)} 分 ${s.months} 个月投入，正是定投降低择时风险的方式。</span>`],
     ['定投 vs 一把梭', `<span class="${signClass(s.totalReturn - s.lumpReturn)}">定投 ${s.totalReturn >= s.lumpReturn ? '跑赢' : '跑输'} ${Math.abs((s.totalReturn - s.lumpReturn) * 100).toFixed(1)} 个百分点</span>`],
@@ -539,6 +604,7 @@ function currentShareUrl() {
     s: p.startMonth,
     e: p.endMonth,
     a: String(p.amount),
+    m: p.endMode,
     ...(p.feeEnabled ? { f: '1', fr: String(p.feeRate * 10000), fm: String(p.feeMin) } : {}),
   });
   return `${location.origin}${location.pathname}#${params.toString()}`;
@@ -572,7 +638,8 @@ async function copySummary() {
   const s = r.summary;
   const lines = [
     `【A股定投模拟器】${snap.ctx.stockName}（${snap.ctx.stockCode}）`,
-    `定投区间：${s.startMonth} ~ ${s.endMonth}（${s.months} 期）`,
+    `定投区间：${s.startMonth} ~ ${s.investEndMonth}（${s.months} 期）`,
+    `结算口径：${s.endModeLabel}${s.endMonth !== s.investEndMonth ? `（算到 ${s.endMonth}）` : `（${s.endMonth}）`}`,
     `每月定投：${money(s.monthlyAmount)}`,
     `累计投入：${money(s.totalInvested)}`,
     `期末市值：${money(s.finalValue)}`,
@@ -602,6 +669,7 @@ function writeHash(form, code) {
     s: form.startMonth,
     e: form.endMonth,
     a: String(form.amount),
+    m: form.endMode,
     ...(form.feeEnabled ? { f: '1', fr: String(form.feeRate * 10000), fm: String(form.feeMin) } : {}),
   });
   history.replaceState(null, '', `#${params.toString()}`);
@@ -618,6 +686,9 @@ function restoreFromHash() {
   }
   const s = state.stock;
   if (!s) return;
+  // 截止口径：只认白名单，其他值一律回落到默认（卖出离场）
+  const modeParam = params.get('m');
+  setEndMode(modeParam === 'hold' ? 'hold' : 'liquidate');
   const startParam = parseMonthParam(params.get('s'), s.firstMonth, s.lastMonth);
   const endParam = parseMonthParam(params.get('e'), s.firstMonth, s.lastMonth);
   if (startParam) setMonth('start', startParam);

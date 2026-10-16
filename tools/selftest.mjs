@@ -314,7 +314,65 @@ check('monthIndex/monthLabel 互逆',
   );
 }
 
-// 3.6 区间裁剪：开始时间早于上市日
+// 3.6 截止月语义（endMode）——同一区间下"卖出离场"与"继续持有"必须给出不同结果
+{
+  const rec = DB.stocks.find((s) => s.code === '600519');
+  const stock = { ...rec, decodedSeries: decodeStockRecord(rec, DB.scale) };
+  const base = { startMonth: '2016-01', endMonth: '2020-01', amount: 3000, feeEnabled: false };
+
+  const liq = simulateFromParams(stock, { ...base, endMode: 'liquidate' }).summary;
+  const hold = simulateFromParams(stock, { ...base, endMode: 'hold' }).summary;
+
+  // 两种口径的扣款月份必须一致（都到 2020-01 停止买入）
+  check('两种口径的扣款截止月一致', liq.investEndMonth === hold.investEndMonth && liq.investEndMonth === '2020-01',
+    `${liq.investEndMonth} / ${hold.investEndMonth}`);
+  // 结算月不同：卖出=截止月，持有=数据最新月
+  check('卖出口径的结算月 = 截止月', liq.endMonth === '2020-01', liq.endMonth);
+  check('持有口径的结算月 = 数据最新月', hold.endMonth === rec.last, `${hold.endMonth} vs ${rec.last}`);
+  check('两种口径的累计投入相同', Math.abs(liq.totalInvested - hold.totalInvested) < 1e-9);
+  check('两种口径的期末市值不同（持有更久、结果应更高）', hold.finalValue > liq.finalValue,
+    `卖出 ${liq.finalValue.toFixed(0)} vs 持有 ${hold.finalValue.toFixed(0)}`);
+  check('两种口径的年化不同（持有把收益摊到更长时间，年化更低）',
+    hold.annualized < liq.annualized,
+    `卖出 ${(liq.annualized * 100).toFixed(2)}% vs 持有 ${(hold.annualized * 100).toFixed(2)}%`);
+
+  // 交叉校验：a 口径的"另一种口径参考值"应当等于 b 口径的期末市值
+  const liqFull = simulateFromParams(stock, { ...base, endMode: 'liquidate' });
+  check('卖出口径给出的"继续持有"参考值 = 持有口径的期末市值',
+    Math.abs(liqFull.summary.altValue - hold.finalValue) < 1e-6,
+    `${liqFull.summary.altValue} vs ${hold.finalValue}`);
+
+  // 截止月已经是数据最新月时，两种口径必须完全等价
+  const lastBase = { startMonth: '2016-01', endMonth: rec.last, amount: 3000 };
+  const liqLast = simulateFromParams(stock, { ...lastBase, endMode: 'liquidate' }).summary;
+  const holdLast = simulateFromParams(stock, { ...lastBase, endMode: 'hold' }).summary;
+  check('截止月=数据最新月时两种口径等价',
+    liqLast.endMonth === holdLast.endMonth &&
+    Math.abs(liqLast.finalValue - holdLast.finalValue) < 1e-9 &&
+    Math.abs(liqLast.annualized - holdLast.annualized) < 1e-12,
+    `${liqLast.endMonth}/${holdLast.endMonth} ${liqLast.finalValue}/${holdLast.finalValue}`);
+
+  // 缺省值必须是 'liquidate'（最无歧义的读法），非法值也要回落到它
+  check('endMode 缺省为 liquidate', simulateFromParams(stock, base).summary.endMode === 'liquidate');
+  check('endMode 非法值回落到 liquidate',
+    simulateFromParams(stock, { ...base, endMode: '乱写' }).summary.endMode === 'liquidate');
+
+  // 全库抽查：任何区间下，持有口径的结算月都不会早于卖出口径
+  let inverted = 0;
+  for (const r of DB.stocks.slice(0, 15)) {
+    const st = { ...r, decodedSeries: decodeStockRecord(r, DB.scale) };
+    const endMi = monthIndex(r.last);
+    const startMi = Math.max(monthIndex(r.first), endMi - 60);
+    const common = { startMonth: monthLabel(startMi), endMonth: monthLabel(endMi - 12), amount: 3000 };
+    if (monthIndex(common.endMonth) < monthIndex(common.startMonth)) continue;
+    const a = simulateFromParams(st, { ...common, endMode: 'liquidate' }).summary;
+    const b = simulateFromParams(st, { ...common, endMode: 'hold' }).summary;
+    if (monthIndex(b.endMonth) < monthIndex(a.endMonth)) inverted++;
+  }
+  check('持有口径的结算月不早于卖出口径（抽查 15 只）', inverted === 0, `${inverted} 只异常`);
+}
+
+// 3.7 区间裁剪：开始时间早于上市日
 {
   const rec = DB.stocks.find((s) => s.code === '688981'); // 中芯国际 2020-07 上市
   const stock = { ...rec, decodedSeries: decodeStockRecord(rec, DB.scale) };

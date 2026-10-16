@@ -90,9 +90,14 @@ h1, h2, h3 { margin: 0; font-weight: 700; letter-spacing: 0.2px; }
   grid-template-columns: minmax(340px, 420px) minmax(0, 1fr);
   gap: 22px;
   align-items: start;
+  /* grid 子项默认 min-width:auto —— 只要子项里存在"无法再收缩"的内容
+     （这里是 .range-row 里的 4 个下拉框），整条轨道就会被撑得比容器宽，
+     在窄屏直接造成整页横向溢出。必须显式允许子项收缩。 */
+  min-width: 0;
 }
+.layout > * { min-width: 0; }
 @media (max-width: 1000px) {
-  .layout { grid-template-columns: 1fr; }
+  .layout { grid-template-columns: minmax(0, 1fr); }
 }
 
 .panel {
@@ -150,6 +155,39 @@ select { cursor: pointer; padding: 9px 8px; }
 .range-arrow { color: var(--text-mute); }
 
 .hint { color: var(--text-mute); font-size: 12.5px; margin-top: 6px; min-height: 0; }
+.label-note { color: var(--text-mute); font-weight: 400; font-size: 12px; }
+
+/* 截止月语义选择（分段控件） */
+.segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+@media (max-width: 520px) { .segmented { grid-template-columns: 1fr; } }
+.seg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  text-align: left;
+  padding: 10px 12px;
+  border-radius: 11px;
+  border: 1px solid var(--line);
+  background: #101620;
+  color: var(--text-dim);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+  /* 关键：grid/flex 子项默认 min-width:auto，长中文文本会把列撑得比容器还宽，
+     在窄屏下造成整页横向溢出。必须显式允许收缩与换行。 */
+  min-width: 0;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.seg b { font-size: 13.5px; color: var(--text); font-weight: 600; word-break: break-word; }
+.seg i { font-style: normal; font-size: 11.5px; color: var(--text-mute); line-height: 1.5; word-break: break-word; }
+.seg:hover { border-color: var(--accent); }
+.seg.active {
+  border-color: var(--accent);
+  background: rgba(245, 196, 81, 0.12);
+}
+.seg.active b { color: var(--accent); }
+.seg[aria-checked='true'] { border-color: var(--accent); background: rgba(245, 196, 81, 0.12); }
 
 /* 标的检索下拉 */
 .picker-list {
@@ -309,6 +347,20 @@ select { cursor: pointer; padding: 9px 8px; }
 
 .verdict { margin: 16px 0 0; color: var(--text-dim); font-size: 14px; line-height: 1.85; }
 .verdict b { color: var(--text); }
+
+/* 截止口径提示条 */
+.mode-banner {
+  margin-top: 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px solid rgba(245, 196, 81, 0.28);
+  background: rgba(245, 196, 81, 0.08);
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.7;
+}
+.mode-banner b { color: var(--accent); }
+.mode-banner:empty { display: none; }
 
 /* 主数字 */
 .hero-grid {

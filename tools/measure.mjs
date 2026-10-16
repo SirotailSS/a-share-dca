@@ -53,18 +53,34 @@ const results = [];
 for (const v of VIEWPORTS) {
   const r = await run(v.w, v.h);
   if (!r) { console.log(`  ? ${v.name} (${v.w}px) 量测失败`); results.push({ v, r: null }); continue; }
-  const overflowPx = r.scrollWidth - r.clientWidth;
+  const layoutWidth = r.layoutWidth;
+  const overflowPx = Math.max(0, r.scrollWidth - r.documentClientWidth);
   const flag = overflowPx > 1 ? '溢出' : 'OK';
-  console.log(`  ${flag} ${v.name} (${v.w}px)  视口=${r.clientWidth} 内容=${r.scrollWidth}` + (overflowPx > 1 ? `  横向溢出 ${overflowPx}px，${r.overflow.length} 个元素越界` : ''));
-  if (r.overflow.length) {
-    for (const o of r.overflow.slice(0, 8)) {
-      console.log(`        ${o.tag}${o.id ? '#' + o.id : ''}${o.cls ? '.' + o.cls.split(/\s+/).join('.') : ''}  left=${o.left} right=${o.right} w=${o.width}  "${o.text}"`);
+  console.log(`  ${flag} ${v.name} (请求 ${v.w}px)  布局宽=${layoutWidth} clientWidth=${r.documentClientWidth} scrollWidth=${r.scrollWidth} bodyScrollW=${r.bodyScrollWidth} innerWidth=${r.legacyViewport} 最右元素=${r.maxRight}px (${r.maxRightEl}) mq520=${r.mq520} mq1000=${r.mq1000}`);
+  if (r.key) {
+    for (const k of r.key) {
+      if (k.missing) { console.log(`        关键元素缺失: ${k.sel}`); continue; }
+      console.log(
+        `        ${k.sel.padEnd(16)} left=${String(k.left).padStart(4)} right=${String(k.right).padStart(4)}` +
+        ` w=${String(k.width).padStart(4)} scrollW=${String(k.scrollWidth).padStart(4)} minW=${k.minWidth} display=${k.display} cols=${k.gridCols}`
+      );
+    }
+  }
+  if (r.overflow.length && overflowPx > 1) {
+    // 只打印"最宽的一批"，完整列表太吵且看不出根因
+    const list = (r.widest && r.widest.length ? r.widest : r.overflow).slice(0, 8);
+    for (const o of list) {
+      console.log(
+        `        ${o.tag}${o.id ? '#' + o.id : ''}${o.cls ? '.' + o.cls.split(/\s+/).join('.') : ''}` +
+        `  right=${o.right} w=${o.width} scrollW=${o.scrollWidth} whiteSpace=${o.whiteSpace}` +
+        `  "${o.text}"`
+      );
     }
   }
   results.push({ v, r });
 }
 
-const bad = results.filter((x) => x.r && x.r.scrollWidth - x.r.clientWidth > 1);
+const bad = results.filter((x) => x.r && x.r.scrollWidth - x.r.documentClientWidth > 1);
 console.log(`\n布局检查：${results.length - bad.length}/${results.length} 个视口无横向溢出`);
 fs.writeFileSync(path.resolve('tools/.cache/measure.json'), JSON.stringify(results, null, 2), 'utf8');
 process.exit(bad.length ? 1 : 0);

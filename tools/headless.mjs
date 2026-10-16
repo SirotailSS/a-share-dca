@@ -62,14 +62,25 @@ class El {
     this.listeners = {};
     this._uid = ++elementSeq;
     this.classList = new ClassList(this);
+    // data-* 属性必须解析进 dataset：真实 DOM 里 `el.dataset.mode` 读的就是它，
+    // 漏掉会让"按钮读不到自己的 data-mode"这类 bug 被测试掩盖。
     for (const [k, v] of Object.entries(attrs)) {
-      if (k.startsWith('data-')) this.dataset[k.slice(5)] = String(v);
+      if (k.startsWith('data-')) {
+        const key = k.slice(5).replace(/-([a-z])/g, (_, ch) => ch.toUpperCase());
+        this.dataset[key] = String(v);
+      }
     }
   }
   get textContent() { return this._text; }
   set textContent(v) { this._text = String(v); this.children = []; }
   get innerHTML() { return this._html; }
-  set innerHTML(v) { this._html = String(v); this.children = []; }
+  set innerHTML(v) {
+    this._html = String(v);
+    // 真实 DOM 里 innerHTML 赋值会重建子节点。垫片必须做同样的轻量解析，
+    // 否则页面里 `el.innerHTML = '<span class="x">…</span>'` 之后再
+    // `el.querySelector('.x')` 会拿到 null，把这类正常写法误判成 bug。
+    this.children = parseFragment(this._html, this);
+  }
   get offsetWidth() { return 100; }
   get offsetHeight() { return 40; }
   setAttribute(k, v) { this.attributes[k] = String(v); if (k === 'id') this.id = String(v); if (k === 'class') this.className = String(v); }
@@ -82,6 +93,8 @@ class El {
     if (this.parentNode) {
       const i = this.parentNode.children.indexOf(this);
       if (i >= 0) this.parentNode.children.splice(i, 1);
+      // 真实 DOM 里移除后节点不再有父级；不清空会让垫片出现"孤儿仍能被找到"的假象
+      this.parentNode = null;
     }
   }
   addEventListener(type, fn) { (this.listeners[type] = this.listeners[type] || []).push(fn); }
@@ -128,8 +141,35 @@ class El {
 function matches(el, sel) {
   if (!el || !sel) return false;
   const s = sel.trim();
+
+  // 后代选择器（如 '#end-mode .seg' / '.panel .btn'）：逐段校验祖先链
+  if (s.includes(' ')) {
+    const parts = s.split(/\s+/).filter(Boolean);
+    if (!matches(el, parts[parts.length - 1])) return false;
+    let node = el.parentNode;
+    for (let i = parts.length - 2; i >= 0; i--) {
+      let found = false;
+      while (node) {
+        if (matches(node, parts[i])) { found = true; node = node.parentNode; break; }
+        node = node.parentNode;
+      }
+      if (!found) return false;
+    }
+    return true;
+  }
+
   if (s.startsWith('#')) return el.id === s.slice(1);
   if (s.startsWith('.')) return (el.className || '').split(/\s+/).includes(s.slice(1));
+  if (s.includes('[')) {
+    // 属性选择器：[data-mode]
+    const m = /^([a-zA-Z][\w-]*)?\[([\w-]+)(?:=(["']?)([^"'\]]*)\3)?\]$/.exec(s);
+    if (!m) return false;
+    if (m[1] && el.tagName !== m[1].toUpperCase()) return false;
+    const attr = m[2];
+    const want = m[4];
+    const has = el.attributes ? el.attributes[attr] !== undefined : false;
+    return want === undefined ? has : String(el.attributes[attr]) === want;
+  }
   return el.tagName === s.toUpperCase();
 }
 
@@ -155,6 +195,13 @@ function parseHTML(html) {
     if (!selfClose && !VOID.has(t)) stack.push(el);
   }
   return root;
+}
+
+/** 与 parseHTML 共用同一套规则，但把结果挂到 parent 下（用于 innerHTML 赋值） */
+function parseFragment(html, parent) {
+  const frag = parseHTML(html);
+  for (const child of frag.children) child.parentNode = parent;
+  return frag.children;
 }
 
 // ── 组装 window / document ────────────────────────────────────
@@ -274,7 +321,15 @@ const appCode = appSrc
 
 console.log('=== 无头启动测试 ===');
 const errors = [];
-win.console = { ...console, error: (...a) => { errors.push(a.map(String).join(' ')); }, warn: () => {} };
+win.console = {
+  ...console,
+  error: (...a) => {
+    const first = a[0];
+    if (first && first.stack) errors.push(first.stack);
+    else errors.push(a.map(String).join(' '));
+  },
+  warn: () => {},
+};
 try {
   vm.runInContext(appCode, context, { filename: 'app.js' });
   // app.js 结尾调用 init()，内部是 async；等一轮微任务 + 定时器
@@ -285,6 +340,12 @@ try {
 
 check('初始化过程没有 console.error', errors.length === 0, errors.join(' | '));
 
+const $ = (sel) => domRoot._find(sel, true);
+const $$ = (sel) => domRoot._find(sel, false);
+// 垫片的 _find 支持后代选择器（如 '#end-mode .seg'），但必须直接从文档根查，
+// 不能从某个元素出发 —— 从元素出发会漏掉"自己不在子树里但选择器要求祖先"的情况。
+// 之前垫片只会做简单选择器匹配，导致 '#end-mode .seg' 匹配不到任何按钮，
+// 于是这些按钮从未绑上事件，把这个坑错当成产品 bug 查了很久。
 const $id = (id) => domRoot._find('#' + id, true);
 check('错误提示区为空', !$id('error-note') || !$id('error-note').textContent, $id('error-note') && $id('error-note').textContent);
 check('标的输入框已回填', !!($id('stock-input') && $id('stock-input').value), $id('stock-input') && $id('stock-input').value);
@@ -412,6 +473,69 @@ const afterFee = $id('hero-value').textContent;
 check('开启手续费后页面重算且不报错', !$id('error-note').textContent, $id('error-note').textContent);
 check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeFee} -> ${afterFee}`);
 
+// 截止月语义（卖出离场 / 继续持有）：两种口径必须都能选，且结果确实不同
+{
+  const segs = $id('end-mode').children;
+  check('截止口径有两个可选按钮', segs.length === 2, `${segs.length} 个`);
+  const segLiq = segs.find((b) => b.dataset.mode === 'liquidate');
+  const segHold = segs.find((b) => b.dataset.mode === 'hold');
+  check('两个按钮的 data-mode 正确', !!segLiq && !!segHold);
+
+  // 区间固定在 2016-01 ~ 2020-01（截止月早于数据最新月，两种口径才会有差别）
+  input.value = '600519';
+  input.dispatch('input');
+  $id('amount').value = '3000';
+  $id('start-year').value = '2016'; $id('start-month').value = '01';
+  $id('end-year').value = '2020'; $id('end-month').value = '01';
+  clickCalc(); // 真实浏览器里下拉框会触发 change 事件，垫片不会，所以显式重算
+  await new Promise((r) => setTimeout(r, 30));
+
+  segLiq.dispatch('click');
+  await new Promise((r) => setTimeout(r, 30));
+  const liqValue = $id('hero-value').textContent;
+  const liqAnnual = $id('hero-annual').textContent;
+  const liqBanner = $id('mode-banner').innerHTML;
+  check('选中「截止月全部卖出」后有醒目口径提示', liqBanner.includes('全部卖出') && liqBanner.includes('2020-01'),
+    liqBanner.slice(0, 60));
+  check('卖出口径下按钮为选中态', segLiq.classList.contains('active') && segLiq.getAttribute('aria-checked') === 'true');
+
+  segHold.dispatch('click');
+  await new Promise((r) => setTimeout(r, 30));
+  const holdValue = $id('hero-value').textContent;
+  const holdAnnual = $id('hero-annual').textContent;
+  const holdBanner = $id('mode-banner').innerHTML;
+  check('选中「停止定投后继续持有」后有醒目口径提示', holdBanner.includes('继续持有'), holdBanner.slice(0, 60));
+  check('持有口径下按钮为选中态', segHold.classList.contains('active') && segHold.getAttribute('aria-checked') === 'true');
+
+  check('两种口径的期末市值不同', liqValue !== holdValue, `卖出 ${liqValue} vs 持有 ${holdValue}`);
+  check('两种口径的年化不同', liqAnnual !== holdAnnual, `卖出 ${liqAnnual} vs 持有 ${holdAnnual}`);
+  check('切换口径后没有报错', !$id('error-note').textContent, $id('error-note').textContent);
+
+  // 明细表要写明用的是哪种口径，并给出另一种口径的对照
+  const detail = $id('detail-table').innerHTML;
+  check('明细表写出了结算口径', detail.includes('结算口径') && detail.includes('继续持有'));
+  check('明细表给出了另一种口径的对照值', detail.includes('若改成'));
+  check('明细表区分了扣款截止月与结算月', detail.includes('扣款截止月'));
+
+  // 截止月 = 数据最新月时，应提示两种口径等价，且结果一致
+  $id('end-year').value = '2026'; $id('end-month').value = '10';
+  segLiq.dispatch('click');
+  await new Promise((r) => setTimeout(r, 30));
+  const lastLiq = $id('hero-value').textContent;
+  const lastLiqAnnual = $id('hero-annual').textContent;
+  segHold.dispatch('click');
+  await new Promise((r) => setTimeout(r, 30));
+  check('截止月=最新月时两种口径结果相同',
+    $id('hero-value').textContent === lastLiq && $id('hero-annual').textContent === lastLiqAnnual,
+    `卖出 ${lastLiq}/${lastLiqAnnual} vs 持有 ${$id('hero-value').textContent}/${$id('hero-annual').textContent}`);
+  check('截止月=最新月时提示两种口径等价',
+    $id('end-mode-note').textContent.includes('相同'), $id('end-mode-note').textContent);
+
+  // 恢复回默认口径，避免影响后续断言
+  segLiq.dispatch('click');
+  await new Promise((r) => setTimeout(r, 30));
+}
+
 // 恶意/损坏的分享链接：不能让页面进入非法状态
 const hashCases = [
   '#c=600519&s=9999-99&e=0000-00&a=-5',
@@ -419,6 +543,7 @@ const hashCases = [
   '#c=999999&s=2020-01&e=2021-01',
   '#c=600519&s=2025-01&e=2015-01&a=3000',
   '#c=600519&f=1&fr=-3&fm=abc',
+  '#c=600519&m=%E4%B9%B1%E5%86%99&s=2016-01&e=2026-10',
   '#%E4%B8%8D%E5%AD%98%E5%9C%A8',
 ];
 let hashOk = 0;

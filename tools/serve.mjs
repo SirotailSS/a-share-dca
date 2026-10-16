@@ -57,7 +57,9 @@ const server = http.createServer(async (req, res) => {
 
     res.writeHead(200, {
       'Content-Type': MIME[ext] || 'application/octet-stream',
-      'Cache-Control': 'no-cache',
+      'Cache-Control': 'no-store, no-cache, must-revalidate',
+      Pragma: 'no-cache',
+      Expires: '0',
     });
     res.end(data);
   } catch {
@@ -72,30 +74,82 @@ function injectProbe(html) {
 (function () {
   function measure() {
     var de = document.documentElement;
+    // 注意：headless Chrome 的窗口有最小宽度限制，--window-size 请求 360/414 时
+    // window.innerWidth 仍可能报 500，而真实布局视口更宽。所以这里不用 innerWidth
+    // 判溢出，而用"文档实际内容宽度 vs 文档元素本身的盒宽"来判断是否有横向溢出：
+    // 若 scrollWidth > clientWidth，说明内容确实超出了可视区域。
+    var layoutWidth = Math.max(de.clientWidth, Math.round(document.body.getBoundingClientRect().width));
     var out = {
-      viewport: window.innerWidth,
-      clientWidth: de.clientWidth,
+      legacyViewport: window.innerWidth,
+      layoutWidth: layoutWidth,
+      documentClientWidth: de.clientWidth,
       scrollWidth: de.scrollWidth,
       bodyScrollWidth: document.body.scrollWidth,
       overflow: [],
     };
+    // 判据必须以"可视区宽度"为准（documentElement.clientWidth），
+    // 不能用 scrollWidth —— 后者本身就是被撑宽后的结果，用它当阈值会永远测不出溢出。
+    var vw = de.clientWidth;
+    var limit = vw;
+    out.limit = limit;
+    out.mq520 = window.matchMedia('(max-width: 520px)').matches;
+    out.mq1000 = window.matchMedia('(max-width: 1000px)').matches;
     var all = document.querySelectorAll('body *');
+    var maxRight = 0;
+    var maxRightEl = null;
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.id === 'dca-measure') continue;
+      var rr = el.getBoundingClientRect();
+      if (rr.width > 0 && rr.right > maxRight) {
+        maxRight = rr.right;
+        maxRightEl = el.tagName.toLowerCase() + (el.id ? '#' + el.id : '') + (el.getAttribute('class') ? '.' + el.getAttribute('class').split(' ').join('.') : '');
+      }
+    }
+    out.maxRight = Math.round(maxRight);
+    out.maxRightEl = maxRightEl;
+    // 关键容器逐个量：谁比父容器宽，谁就是撑宽页面的元凶
+    out.key = [];
+    var KEY = ['.layout', '#form-panel', '#result-anchor', '#form', '.range-row', '.segmented',
+      '.hero-grid', '.year-bars', '.detail-table', '.chart-svg', '#stock-input'];
+    for (var k = 0; k < KEY.length; k++) {
+      var ke = document.querySelector(KEY[k]);
+      if (!ke) { out.key.push({ sel: KEY[k], missing: true }); continue; }
+      var kr = ke.getBoundingClientRect();
+      var kcs = window.getComputedStyle(ke);
+      out.key.push({
+        sel: KEY[k],
+        left: Math.round(kr.left), right: Math.round(kr.right), width: Math.round(kr.width),
+        scrollWidth: ke.scrollWidth, minWidth: kcs.minWidth, display: kcs.display,
+        gridCols: kcs.gridTemplateColumns ? kcs.gridTemplateColumns.slice(0, 60) : '',
+      });
+    }
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
       if (el.id === 'dca-measure') continue;
       var r = el.getBoundingClientRect();
-      if (r.width > 0 && (r.right > de.clientWidth + 1 || r.left < -1)) {
+      if (r.width > 0 && (r.right > limit + 1 || r.left < -1)) {
+        var cs = window.getComputedStyle(el);
         out.overflow.push({
           tag: el.tagName.toLowerCase(),
           id: el.id || '',
           cls: (el.getAttribute('class') || '').slice(0, 70),
           left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width),
+          scrollWidth: el.scrollWidth,
+          overflowX: cs.overflowX,
+          whiteSpace: cs.whiteSpace,
           text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
         });
       }
     }
     var pre = document.getElementById('dca-measure') || document.createElement('pre');
     pre.id = 'dca-measure';
+    // 除了列出越界元素，再按"右边缘"排序给出最宽的一批，方便直接定位是谁把页面撑宽的
+    var widest = out.overflow
+      .slice()
+      .sort(function (a, b) { return b.right - a.right; })
+      .slice(0, 12);
+    out.widest = widest;
     pre.textContent = 'DCA_MEASURE_START' + JSON.stringify(out) + 'DCA_MEASURE_END';
     if (!pre.parentNode) document.body.appendChild(pre);
   }

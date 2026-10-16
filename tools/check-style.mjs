@@ -92,6 +92,31 @@ if (chartWrap && /overflow\s*:\s*hidden/.test(chartWrap[1])) {
   problems.push('.chart-wrap 设置了 overflow:hidden，可能会裁掉图表上的十字光标与提示气泡');
 }
 
+// 10. 横向溢出护栏（真实踩过的坑）
+// grid/flex 子项默认 min-width:auto，子项里只要有"无法再收缩"的内容
+// （比如一行 4 个下拉框），轨道就会被撑得比容器宽，窄屏下整页横向溢出。
+{
+  const layoutRule = /\.layout\s*\{([^}]*)\}/.exec(css);
+  check('.layout 显式声明了 min-width: 0', !!layoutRule && /min-width\s*:\s*0/.test(layoutRule[1]),
+    layoutRule ? layoutRule[1].replace(/\s+/g, ' ').slice(0, 70) : '未找到 .layout 规则');
+  check('.layout 的直接子元素允许收缩', /\.layout\s*>\s*\*\s*\{[^}]*min-width\s*:\s*0/.test(css));
+
+  // 单列断点必须用 minmax(0,1fr)，写 1fr 会保留 min-content 下限
+  const singleCol = /@media\s*\(max-width:\s*1000px\)\s*\{[^}]*\.layout\s*\{([^}]*)\}/.exec(css);
+  check('单列断点使用 minmax(0, 1fr)', !!singleCol && /minmax\(\s*0\s*,\s*1fr\s*\)/.test(singleCol[1]),
+    singleCol ? singleCol[1].trim() : '未找到单列断点');
+
+  // 只带输入控件的行必须有 min-width:0 / 允许换行
+  const rangeRow = /\.range-row\s*\{([^}]*)\}/.exec(css);
+  check('.range-row 允许收缩或换行', !!rangeRow && /(min-width\s*:\s*0|flex-wrap\s*:\s*wrap)/.test(rangeRow[1]),
+    rangeRow ? rangeRow[1].trim() : '未找到 .range-row');
+
+  // 年份柱状图是横向滚动的，必须显式允许
+  const yearBars = /\.year-bars\s*\{([^}]*)\}/.exec(css);
+  check('.year-bars 是横向滚动容器', !!yearBars && /overflow-x\s*:\s*(auto|scroll)/.test(yearBars[1]),
+    yearBars ? yearBars[1].trim() : '未找到 .year-bars');
+}
+
 // 10. 提示气泡不能被父级裁剪
 notes.push('图表提示气泡定位方式：绝对定位 + JS 计算 left/top（已在无头测试中验证存在）');
 

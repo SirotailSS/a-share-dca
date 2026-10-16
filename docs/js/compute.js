@@ -129,14 +129,32 @@ export function irr(flows, periodsPerYear = 12) {
   return annualize((lo + hi) / 2);
 }
 
+/** 取某个月价格；若该月无行情（停牌/超范围），退回到不晚于它的最近一个有效月份 */
+function endBarOf(series, mi) {
+  let candidate = series[0];
+  for (const p of series) {
+    if (p.mi <= mi) candidate = p;
+    else break;
+  }
+  return candidate;
+}
+
 /**
  * 定投模拟主函数。
+ *
+ * 关于"截止月"的两种语义 —— 这是用户最容易产生歧义的地方，所以显式做成选项：
+ *   · endMode = 'liquidate'（默认）：定投到截止月为止，并在**截止月按当月收盘价全部卖出**。
+ *     收益率、年化、最大回撤全部只统计 [起投月, 截止月] 这段区间。
+ *   · endMode = 'hold'：定投到截止月为止就停止扣款，**持仓继续保留到数据最新月份**。
+ *     此时期末市值与年化都算到最新月份（同一笔收益被摊到更长时间，年化会更低）。
+ * 两种口径的期末市值/年化都可能不同，所以结果区必须明确写出用的是哪一种。
  *
  * @param {object} opts
  * @param {{mi:number,month:string,price:number}[]} opts.series 归一化后的价格序列（后复权）
  * @param {string} opts.startMonth 'YYYY-MM'
  * @param {number} opts.months 定投期数（含首月）
  * @param {number} opts.amount 每月投入金额
+ * @param {'liquidate'|'hold'} [opts.endMode='liquidate'] 截止月语义
  * @param {boolean} [opts.feeEnabled=false]
  * @param {number} [opts.feeRate=0.00025] 手续费率
  * @param {number} [opts.feeMin=5] 单笔最低手续费
@@ -144,6 +162,7 @@ export function irr(flows, periodsPerYear = 12) {
  */
 export function simulate(opts) {
   const { series, startMonth, months, amount, feeEnabled = false } = opts;
+  const endMode = opts.endMode === 'hold' ? 'hold' : 'liquidate';
   const feeRate = opts.feeRate ?? 0.00025;
   const feeMin = opts.feeMin ?? 5;
   const cashYield = opts.cashYield ?? 0;
@@ -248,16 +267,25 @@ export function simulate(opts) {
     });
   }
 
-  // ── 期末结算（按定投截止月的价格） ────────────────────────────
-  const endBar = priceByMi.get(lastTradeMi) || series[series.length - 1];
-  const priceEnd = endBar.price;
+  // ── 期末结算 ────────────────────────────────────────────────
+  // 结算月份由 endMode 决定：
+  //   liquidate —— 截止月就按当月收盘价全部卖出，区间到截止月为止；
+  //   hold      —— 截止月停止扣款，持仓延续到数据最新月份再结算。
+  // 两者的期末市值、收益率、年化口径都不同，必须让用户明确选一个。
+  const holdBar = series[series.length - 1];
+  const settleMi = endMode === 'hold' ? holdBar.mi : lastTradeMi;
+  const settleBar = priceByMi.get(settleMi) || endBarOf(series, settleMi);
+  const priceEnd = settleBar.price;
   const finalValue = shares * priceEnd + idleCash;
   // 期末把持仓"变现"记为当期正现金流，IRR 才有解
-  flowByMi.set(lastTradeMi, (flowByMi.get(lastTradeMi) || 0) + finalValue);
+  flowByMi.set(settleMi, (flowByMi.get(settleMi) || 0) + finalValue);
 
-  // 若用户在截止月之后继续持有到最新行情，顺带给出一个"持有至今"的参考市值
-  const holdBar = series[series.length - 1];
+  // 另一种口径的参考市值，用于在结果区做对照说明
+  const altMi = endMode === 'hold' ? lastTradeMi : holdBar.mi;
+  const altBar = priceByMi.get(altMi) || endBarOf(series, altMi);
+  const altValue = shares * altBar.price + idleCash;
   const holdValue = shares * holdBar.price + idleCash;
+  const holdMonth = holdBar.month;
 
   // ── 汇总 ────────────────────────────────────────────────────
   const totalInvested = invested;
@@ -374,8 +402,8 @@ export function simulate(opts) {
     yearly.push(rec);
   }
 
-  // 市场区间涨幅（同期一次性持有该标的的涨幅）
-  const marketReturn = lstTradePrice > 0 ? priceEnd / trades[0].price - 1 : 0;
+  // 市场区间涨幅（同期一次性持有该标的的涨幅）：买入价用定投首月的价格，期末价用结算月价格
+  const marketReturn = trades[0].price > 0 ? priceEnd / trades[0].price - 1 : 0;
 
   return {
     trades,
@@ -383,7 +411,10 @@ export function simulate(opts) {
     flows,
     summary: {
       startMonth: trades[0].month,
-      endMonth: endBar.month,
+      endMonth: settleBar.month,          // 真正用于结算/估值的月份
+      investEndMonth: trades[trades.length - 1].month, // 最后一次扣款的月份
+      endMode,
+      endModeLabel: endMode === 'hold' ? '停止定投后继续持有' : '截止月全部卖出',
       months: trades.length,
       calendarMonths,
       years: calendarYears,
@@ -403,8 +434,13 @@ export function simulate(opts) {
       avgBuyPercentile,
       endPrice: priceEnd,
       endPercentile,
-      // 定投截止后继续持有到最新行情的参考市值（若截止月就是最新月，则与期末市值相同）
-      holdMonth: holdBar.month,
+      // 另一种截止口径的参考市值（若两种口径的结算月相同，则与期末市值一致）
+      altMonth: altBar.month,
+      altValue,
+      altProfit: altValue - totalInvested,
+      altReturn: totalInvested > 0 ? (altValue - totalInvested) / totalInvested : 0,
+      // 定投截止后继续持有到最新行情的参考市值
+      holdMonth,
       holdValue,
       holdProfit: holdValue - totalInvested,
       holdReturn: totalInvested > 0 ? (holdValue - totalInvested) / totalInvested : 0,
@@ -431,7 +467,7 @@ export function simulate(opts) {
 /** 便捷封装：根据股票记录 + 表单参数直接出结果 */
 export function simulateFromParams(stock, params) {
   const series = normalizeSeries(stock.decodedSeries || []);
-  const { startMonth, endMonth, amount, feeEnabled, feeRate, feeMin } = params;
+  const { startMonth, endMonth, amount, feeEnabled, feeRate, feeMin, endMode } = params;
   const sMi = monthIndex(startMonth);
   const eMi = monthIndex(endMonth);
   if (eMi < sMi) throw new Error('结束月份不能早于开始月份');
@@ -445,6 +481,7 @@ export function simulateFromParams(stock, params) {
     startMonth: monthLabel(effectiveStart),
     months,
     amount,
+    endMode,
     feeEnabled,
     feeRate,
     feeMin,
