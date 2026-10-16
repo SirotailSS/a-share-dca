@@ -464,7 +464,7 @@ function render(r, rank, ach, ctx, benchmarkAnnualized) {
     ['总收益率', `<span class="${signClass(s.profit)}">${pct(s.totalReturn)}</span>`],
     ['年化收益率（IRR）', `<span class="${signClass(s.annualized)}">${pct(s.annualized)}</span>`],
     ['同期标的涨幅', `<span class="${signClass(s.marketReturn)}">${pct(s.marketReturn)}</span>　（买入首月 ${s.firstPrice.toFixed(2)} → 期末 ${s.endPrice.toFixed(2)}）`],
-    ['一口气全投（一次性买入）', `把全部 <b>${money(s.lumpInvested)}</b> 在首月一次买入 → ${money(s.lumpValue)}，<span class="${signClass(s.lumpProfit)}">${pct(s.lumpReturn)}</span>（年化 ${pct(s.lumpAnnualized)}）<br><span class="muted">⚠️ 这只是"同样总资金一把梭"的数学参照：它要求你在第一个月就拿出 ${money(s.totalInvested)}（约等于 ${Math.round(s.totalInvested / Math.max(1, s.months))} 个月的月供），实际很少有人做得到；定投的意义正是把它摊到 ${s.months} 个月里。</span>`],
+    ['一口气全投（一次性买入）', `把全部 <b>${money(s.lumpInvested)}</b> 在首月一次买入 → ${money(s.lumpValue)}，<span class="${signClass(s.lumpProfit)}">${pct(s.lumpReturn)}</span>（年化 ${pct(s.lumpAnnualized)}）<br><span class="muted">⚠️ 这只是"同样总资金一把梭"的数学参照：它要求你在第一个月就拿出 ${money(s.totalInvested)}，相当于 <b>${s.months}</b> 个月的月供，实际很少有人做得到；而按 ${money(s.monthlyAmount)} 分 ${s.months} 个月投入，正是定投降低择时风险的方式。</span>`],
     ['定投 vs 一把梭', `<span class="${signClass(s.totalReturn - s.lumpReturn)}">定投 ${s.totalReturn >= s.lumpReturn ? '跑赢' : '跑输'} ${Math.abs((s.totalReturn - s.lumpReturn) * 100).toFixed(1)} 个百分点</span>`],
     ...(Number.isFinite(benchmarkAnnualized)
       ? [['同期沪深300年化', `<span class="${signClass(s.annualized - benchmarkAnnualized)}">${pct(benchmarkAnnualized)}　→　本策略${s.annualized >= benchmarkAnnualized ? '跑赢' : '跑输'} ${Math.abs((s.annualized - benchmarkAnnualized) * 100).toFixed(2)} 个百分点</span>`]]
