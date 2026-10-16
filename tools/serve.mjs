@@ -38,9 +38,18 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(403).end('Forbidden');
       return;
     }
-    const data = await fs.readFile(full);
+    let data = await fs.readFile(full);
+    const ext = path.extname(full).toLowerCase();
+
+    // ?measure=1 只给本地预览用：往 HTML 里注入一段量测脚本，
+    // 把页面宽度与溢出元素写进 DOM，方便配合 --dump-dom 做布局回归。
+    // 生产代码 docs/index.html 完全不受影响。
+    if (ext === '.html' && url.searchParams.get('measure') === '1') {
+      data = Buffer.from(injectProbe(data.toString('utf8')), 'utf8');
+    }
+
     res.writeHead(200, {
-      'Content-Type': MIME[path.extname(full).toLowerCase()] || 'application/octet-stream',
+      'Content-Type': MIME[ext] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
     });
     res.end(data);
@@ -49,6 +58,48 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+/** 注入布局量测探针：测量视口与真实内容宽度，并列出所有横向溢出的元素 */
+function injectProbe(html) {
+  const probe = `
+<script>
+(function () {
+  function measure() {
+    var de = document.documentElement;
+    var out = {
+      viewport: window.innerWidth,
+      clientWidth: de.clientWidth,
+      scrollWidth: de.scrollWidth,
+      bodyScrollWidth: document.body.scrollWidth,
+      overflow: [],
+    };
+    var all = document.querySelectorAll('body *');
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (el.id === 'dca-measure') continue;
+      var r = el.getBoundingClientRect();
+      if (r.width > 0 && (r.right > de.clientWidth + 1 || r.left < -1)) {
+        out.overflow.push({
+          tag: el.tagName.toLowerCase(),
+          id: el.id || '',
+          cls: (el.getAttribute('class') || '').slice(0, 70),
+          left: Math.round(r.left), right: Math.round(r.right), width: Math.round(r.width),
+          text: (el.textContent || '').replace(/\\s+/g, ' ').trim().slice(0, 40),
+        });
+      }
+    }
+    var pre = document.getElementById('dca-measure') || document.createElement('pre');
+    pre.id = 'dca-measure';
+    pre.textContent = 'DCA_MEASURE_START' + JSON.stringify(out) + 'DCA_MEASURE_END';
+    if (!pre.parentNode) document.body.appendChild(pre);
+  }
+  if (document.readyState === 'complete') setTimeout(measure, 800);
+  else window.addEventListener('load', function () { setTimeout(measure, 800); });
+})();
+</script>`;
+  return html.replace('</body>', probe + '\n</body>');
+}
+
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`本地预览：http://127.0.0.1:${PORT}/  （根目录 docs/，Ctrl+C 退出）`);
+  console.log(`布局量测：http://127.0.0.1:${PORT}/?measure=1  （配合 --dump-dom 使用）`);
 });

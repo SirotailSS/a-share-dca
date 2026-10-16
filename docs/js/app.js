@@ -287,11 +287,15 @@ function setAmountQuick(v) {
 }
 
 // ── 表单读取 ────────────────────────────────────────────────
+/** 金额上限：防止 URL 里的 1e308 之类把结果污染成 Infinity（渲染层会显示 "Infinity 亿"） */
+const MAX_AMOUNT = 1e9;
+
 function readForm() {
+  const rawAmount = Number($('#amount').value);
   return {
     startMonth: getStartMonth(),
     endMonth: getEndMonth(),
-    amount: Math.max(1, Number($('#amount').value) || 0),
+    amount: Number.isFinite(rawAmount) ? Math.min(Math.max(1, Math.round(rawAmount)), MAX_AMOUNT) : 0,
     feeEnabled: $('#fee-toggle').checked,
     feeRate: Math.max(0, Number($('#fee-rate').value) || 0) / 10000,
     feeMin: Math.max(0, Number($('#fee-min').value) || 0),
@@ -300,7 +304,8 @@ function readForm() {
 
 // ── 事件绑定 ────────────────────────────────────────────────
 function bindEvents() {
-  $('#calc-btn').addEventListener('click', () => run());
+  // 只绑定 form 的 submit：按钮是 type=submit，如果这里再绑一次 click，
+  // 点一下会同时触发 click 与 submit，run() 跑两遍、图表重建两次。
   $('#form').addEventListener('submit', (e) => {
     e.preventDefault();
     run();
@@ -459,7 +464,7 @@ function render(r, rank, ach, ctx, benchmarkAnnualized) {
     ['总收益率', `<span class="${signClass(s.profit)}">${pct(s.totalReturn)}</span>`],
     ['年化收益率（IRR）', `<span class="${signClass(s.annualized)}">${pct(s.annualized)}</span>`],
     ['同期标的涨幅', `<span class="${signClass(s.marketReturn)}">${pct(s.marketReturn)}</span>　（买入首月 ${s.firstPrice.toFixed(2)} → 期末 ${s.endPrice.toFixed(2)}）`],
-    ['一把梭对比', `同期一次性投入 ${money(s.lumpInvested)} → ${money(s.lumpValue)}，<span class="${signClass(s.lumpProfit)}">${pct(s.lumpReturn)}</span>（年化 ${pct(s.lumpAnnualized)}）`],
+    ['一口气全投（一次性买入）', `把全部 <b>${money(s.lumpInvested)}</b> 在首月一次买入 → ${money(s.lumpValue)}，<span class="${signClass(s.lumpProfit)}">${pct(s.lumpReturn)}</span>（年化 ${pct(s.lumpAnnualized)}）<br><span class="muted">⚠️ 这只是"同样总资金一把梭"的数学参照：它要求你在第一个月就拿出 ${money(s.totalInvested)}（约等于 ${Math.round(s.totalInvested / Math.max(1, s.months))} 个月的月供），实际很少有人做得到；定投的意义正是把它摊到 ${s.months} 个月里。</span>`],
     ['定投 vs 一把梭', `<span class="${signClass(s.totalReturn - s.lumpReturn)}">定投 ${s.totalReturn >= s.lumpReturn ? '跑赢' : '跑输'} ${Math.abs((s.totalReturn - s.lumpReturn) * 100).toFixed(1)} 个百分点</span>`],
     ...(Number.isFinite(benchmarkAnnualized)
       ? [['同期沪深300年化', `<span class="${signClass(s.annualized - benchmarkAnnualized)}">${pct(benchmarkAnnualized)}　→　本策略${s.annualized >= benchmarkAnnualized ? '跑赢' : '跑输'} ${Math.abs((s.annualized - benchmarkAnnualized) * 100).toFixed(2)} 个百分点</span>`]]

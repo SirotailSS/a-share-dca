@@ -8,10 +8,11 @@
   "scripts": {
     "build:db": "node tools/build-db.mjs",
     "build:db:offline": "node tools/build-db.mjs --offline",
-    "test": "node tools/selftest.mjs && node tools/check-dom.mjs && node tools/check-style.mjs && node tools/headless.mjs",
+    "test": "node tools/selftest.mjs && node tools/check-dom.mjs && node tools/check-style.mjs && node tools/check-achievements.mjs && node tools/headless.mjs",
     "test:engine": "node tools/selftest.mjs",
     "test:dom": "node tools/check-dom.mjs",
     "test:style": "node tools/check-style.mjs",
+    "test:achievements": "node tools/check-achievements.mjs",
     "test:headless": "node tools/headless.mjs",
     "serve": "node tools/serve.mjs"
   },

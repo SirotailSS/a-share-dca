@@ -207,6 +207,31 @@ export function decodeMonths(str, offset, count) {
   return idx.map((mi) => `${Math.floor(mi / 12)}-${String((mi % 12) + 1).padStart(2, '0')}`);
 }
 
+/**
+ * 行情精度：以「厘」为单位存价格（scale=1000）。
+ * 为什么不是「分」：部分 ETF 报价带三位小数（如 588000 = 1.144），
+ * 按分取整单点最大相对误差可达 0.79%，会把年化拉开 0.2 个百分点。
+ * 用厘之后量化误差降到 0.1% 以内，代价只是数据库大十几 KB（gzip 后更小）。
+ */
+const PRICE_SCALE = 1000;
+
+/**
+ * 行情接口给的是"当前快照"的名称，除权除息期间会带 XD/XR/DR 前缀，
+ * 风险警示股带 ST/*ST，新股上市首日带 N。
+ * 这些前缀会随日期变化，绝不能固化进数据库，否则"XD片仔癀"会被永久写进去。
+ */
+function normalizeStockName(raw) {
+  if (!raw) return '';
+  let name = String(raw).replace(/\s+/g, '');
+  // 允许连续前缀，如 "*ST"、"XD*ST"
+  for (let i = 0; i < 4; i++) {
+    const next = name.replace(/^(\*?ST|XD|XR|DR|N|C)/, '');
+    if (next === name) break;
+    name = next;
+  }
+  return name;
+}
+
 // ── 数据源 1：腾讯（主源，月度后复权） ──────────────────────────────
 const TENCENT_SYMBOL = (market, code) => `${market === '1' ? 'sh' : 'sz'}${code}`;
 
@@ -296,7 +321,7 @@ async function buildOne(entry, allowOffline) {
   if (!raw) throw new Error(`所有数据源都失败 —— ${errors.join('；')}`);
 
   const series = dedupeMonths(raw.series);
-  const name = (raw.name || entry.fallbackName || '').replace(/\s+/g, '');
+  const name = normalizeStockName(raw.name || entry.fallbackName || '');
   if (!name) throw new Error(`拿不到名称（${entry.secid}）`);
 
   // ── 数据质量闸门：宁可失败也不能写入坏数据 ──
@@ -374,28 +399,31 @@ async function main() {
     adjust: '月度后复权（hfq）。以上市首日为基准把现金分红按除权日价格再投资、送转股全部还原，故价格恒为正，且「期末价/买入价-1」即含分红再投资的真实收益率。',
     source: '腾讯行情 ifzq fqkline (month, hfq)；备用：东方财富 push2his (klt=103, fqt=2)',
     sourceNote: '两个数据源的后复权算法不同（现金分红再投资假设不同），实测同一标的差异可达 10%~25%；全库只使用同一数据源，禁止混用。',
-    scale: 100,
+    scale: PRICE_SCALE,
     currency: 'CNY',
     encoding: {
-      series: '价格：先算相邻月收盘价之差（单位：分），整体平移成非负（平移量记在 seriesOffset），再按 7 bit 一组、低位组在前做变长整数，除最后一组外都加 0x80 作继续标志，最后每字节拆成两个 6 bit 字符。',
+      series: `价格：先算相邻月收盘价之差（单位：厘，1 元 = ${PRICE_SCALE} 厘），整体平移成非负（平移量记在 seriesOffset），再按 7 bit 一组、低位组在前做变长整数，除最后一组外都加 0x80 作继续标志，最后每字节拆成两个 6 bit 字符。`,
       months: '时间轴：把每个月的月序号（年 × 12 + 月 - 1）编码成同一种整数序列，平移量记在 monthsOffset。直接存绝对月序号是为了无歧义地表达停牌造成的缺月。',
     },
     stocks: ok.map((r) => {
       const months = r.series.map((s) => s.month);
-      const series = encodeSeries(r.series.map((s) => s.close));
+      const series = encodeSeries(r.series.map((s) => s.close), PRICE_SCALE);
       const monthCode = encodeMonths(months);
+      // 元信息里的首末价必须与编码后能还原出来的值完全一致（都按 PRICE_SCALE 取整），
+      // 否则解码自检会在"元信息核对"这一步失败。原先是拿未取整的原始值写入的。
+      const q = (v) => Math.round(v * PRICE_SCALE) / PRICE_SCALE;
       return {
         id: `${r.market}${r.code}`,
         code: r.code,
         market: r.market,
-        name: r.name,
+        name: normalizeStockName(r.name),
         group: r.group,
         tag: r.tag,
         first: months[0],
         last: months[months.length - 1],
         span: months.length,
-        firstClose: r.series[0].close,
-        lastClose: r.series[r.series.length - 1].close,
+        firstClose: q(r.series[0].close),
+        lastClose: q(r.series[r.series.length - 1].close),
         series: `___ENCODED___${series.str}`,
         seriesOffset: series.offset,
         months: monthCode.str,

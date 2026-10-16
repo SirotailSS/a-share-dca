@@ -322,6 +322,11 @@ for (const btn of presets) {
 }
 check(`全部 ${presets.length} 个预设剧本都能算出结果`, presetOk === presets.length, `成功 ${presetOk}/${presets.length}`);
 
+// 工具：模拟用户点击"计算"按钮。按钮是 type=submit，真实浏览器会触发表单提交，
+// 所以这里也走 submit 路径（app.js 只在 form 上绑了 submit，避免重复计算）。
+const form = $id('form');
+const clickCalc = () => form.dispatch('submit');
+
 // 切换标的（含别名搜索）与极端参数
 const input = $id('stock-input');
 const list = $id('stock-list');
@@ -345,23 +350,43 @@ input.value = '不存在的标的xyz';
 input.dispatch('input');
 check('搜不到时给出提示而不是空白', listHTML().includes('没找到'), listHTML().slice(0, 60));
 
-// 极端参数：金额很小、区间 1 个月
+// 极端参数：金额很小、区间 2 个月
 input.value = '600519';
 input.dispatch('input');
 $id('start-year').value = '2026'; $id('start-month').value = '09';
 $id('end-year').value = '2026'; $id('end-month').value = '10';
 $id('amount').value = '1';
-$id('calc-btn').dispatch('click');
+clickCalc();
 await new Promise((r) => setTimeout(r, 30));
 check('极端小额 + 2 个月区间也能出结果或给出友好提示',
   !$id('error-note').textContent || $id('error-note').textContent.includes('算不出来') || $id('error-note').textContent.includes('区间'),
   $id('error-note').textContent);
 
+// 单期（起 = 止）：年化不能退化成 "—"
+$id('amount').value = '3000';
+$id('start-year').value = '2020'; $id('start-month').value = '01';
+$id('end-year').value = '2020'; $id('end-month').value = '01';
+clickCalc();
+await new Promise((r) => setTimeout(r, 30));
+check('起止同月（只有 1 笔成交）也能给出年化而不是 "—"',
+  $id('hero-annual').textContent.includes('%'), `年化=${$id('hero-annual').textContent}`);
+
+// 超范围金额：不能把结果污染成 Infinity
+$id('start-year').value = '2016'; $id('start-month').value = '01';
+$id('end-year').value = '2026'; $id('end-month').value = '10';
+$id('amount').value = '1e308';
+clickCalc();
+await new Promise((r) => setTimeout(r, 30));
+const hugeProfit = $id('hero-profit').textContent;
+check('超大金额被夹到上限，不出现 Infinity/NaN',
+  !/Infinity|NaN/.test(hugeProfit) && !/Infinity|NaN/.test($id('hero-value').textContent),
+  `盈亏=${hugeProfit} 市值=${$id('hero-value').textContent}`);
+
 // 手续费开关
 $id('amount').value = '3000';
 $id('start-year').value = '2018'; $id('start-month').value = '01';
 $id('end-year').value = '2026'; $id('end-month').value = '10';
-$id('calc-btn').dispatch('click');
+clickCalc();
 await new Promise((r) => setTimeout(r, 30));
 const beforeFee = $id('hero-value').textContent;
 $id('fee-toggle').checked = true;

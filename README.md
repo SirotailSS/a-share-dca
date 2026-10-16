@@ -1,4 +1,4 @@
-﻿# 📈 A股定投模拟器
+# 📈 A股定投模拟器
 
 > 输入「我从 XX 年 XX 月开始，每月定投 XX 元买 XX 股票，到 XX 年 XX 月为止」，
 > 立刻算出总盈亏、年化收益率（IRR）、最大回撤，并根据战绩颁发称号与成就。
@@ -28,7 +28,7 @@
 刻意选了「最笨但最稳」的方案，因为这是个一次交付、长期挂在 Pages 上的小工具：
 
 - **零构建、零依赖**：没有打包器、没有框架、没有 CDN。原生 HTML/CSS/ES Module，
-  双击 `docs/index.html` 就能跑（数据用 `<script>` 加载，不受 `file://` 的 CORS 限制）。
+  页面运行时不发任何网络请求，`docs/` 就是完整的发布产物。
 - **图表自己画**：3 条线的折线图用原生 SVG 写，省掉 ECharts/Chart.js 那几百 KB。
 - **行情数据预生成**：浏览器不去请求任何第三方接口 —— 那样既会被限流、又有跨域问题、还不可复现。
   改为用 `tools/build-db.mjs` 离线抓取，压缩后提交进仓库（64 只标的合计约 120 KB）。
@@ -50,21 +50,25 @@ a-share-dca/
 │   ├── stock-list.mjs       ← 标的池（分组、标签）
 │   ├── aliases.mjs          ← 口语别名，让"茅台""宁王"都能搜到
 │   ├── build-db.mjs         ← 抓行情 + 校验 + 压缩 + 生成
-│   ├── selftest.mjs         ← 编解码/引擎/称号 93 项自检
+│   ├── selftest.mjs         ← 编解码/引擎/称号 110 项自检
 │   ├── check-dom.mjs        ← 静态检查：选择器、资源引用是否都对得上
 │   ├── check-style.mjs      ← 静态检查：CSS 括号/变量/死类/图表高度
+│   ├── check-achievements.mjs ← 穷举扫描：确认 30 个徽章都存在可达路径
 │   ├── headless.mjs         ← 无头启动测试：真跑一遍页面逻辑
-│   └── serve.mjs            ← 本地预览服务器
+│   ├── measure.mjs          ← 真实浏览器布局量测（需完整权限）
+│   ├── screenshot.mjs       ← 真实浏览器截图（需完整权限）
+│   └── serve.mjs            ← 本地预览服务器（支持 ?measure=1 注入布局探针）
 └── .github/workflows/deploy.yml
 ```
 
 ## 🚀 本地运行
 
 ```bash
-# 直接双击也行，但用本地服务器更接近线上环境
-npm run serve          # http://127.0.0.1:4173
+# ⚠️ 必须用本地服务器打开，不能直接双击 index.html：
+# app.js 是 ES module，Chrome/Edge/Firefox 在 file:// 下会以 CORS 为由拒绝加载它。
+node tools/serve.mjs 4173     # 或 npm run serve → http://127.0.0.1:4173/
 
-# 跑全部检查（引擎 92 项 + DOM 一致性 + 无头启动）
+# 跑全部检查（引擎 110 项 + DOM 一致性 + CSS 静态审查 + 无头启动）
 npm test
 ```
 
@@ -80,8 +84,8 @@ npm test
 >
 > ⚠️ 注意：GitHub Pages 对**私有仓库**需要付费计划；免费账户请把仓库设为 Public。
 
-发布体积（全部静态资源，实测）：原始 216 KB，gzip 后 **73.6 KB**（压缩比 2.94x）。
-其中 `stocks.js` 123 KB / `style.css` 16 KB / 5 个 JS 模块合计 68 KB。
+发布体积（全部静态资源，实测）：原始 233 KB，gzip 后 **84.4 KB**（压缩比 2.76x）。
+其中 `stocks.js` 134 KB / `style.css` 16 KB / 5 个 JS 模块合计 70 KB。
 没有任何第三方请求，首屏不需要网络往返。
 
 ## 🔄 更新行情数据
@@ -118,20 +122,25 @@ node tools/build-db.mjs --only 600519,000858   # 只更新指定标的
 这个项目的计算全在浏览器里，Node 单测覆盖不到页面逻辑；而收益数字算错是**用户看不出来**的错误。
 所以分四层防：
 
-1. `tools/selftest.mjs`（93 项）
-   压缩编解码无损、数据库自洽、**IRR 与闭式解/手工推导一致**、
-   手续费、区间裁剪、全库 64 只标的压力测试、称号与成就判定。
+1. `tools/selftest.mjs`（110 项）
+   压缩编解码无损、数据库自洽、**IRR 与闭式解/手工推导一致**（含极端亏损、全损、
+   单期这些曾经返回 NaN 的支路）、手续费、区间裁剪、
+   全库 64 只标的压力测试、72 组随机参数的恒等式审计、称号与成就判定。
 2. `tools/check-dom.mjs`
    把 JS 里用到的每个选择器与 `index.html` 的 id/class 对照，
    顺带检查模块 import 与静态资源是否都存在。
 3. `tools/check-style.mjs`
    CSS 括号配对、变量是否都有定义、HTML 类是否有样式或 JS 钩子、
    图表容器高度是否为 0 这类只有渲染时才暴露的坑。
-4. `tools/headless.mjs`
+4. `tools/check-achievements.mjs`
+   全库 15000+ 组参数穷举，确认**每个徽章都真的能解锁**。
+   这条检查是有来由的：曾经有 2 个徽章因为读错字段、判据不可达而永远拿不到，
+   而当时的单测夹具恰好掩盖了它。
+5. `tools/headless.mjs`
    用几十行的 DOM 垫片把真的 `app.js` 跑起来，验证首屏渲染、
-   6 个预设剧本、别名搜索、极端参数、手续费开关。
+   6 个预设剧本、别名搜索、极端参数、手续费开关、敌意分享链接。
 
-CI 里跑第 1 套作为上线闸门（见 `deploy.yml`），本地 `npm test` 跑全部四套。
+CI 里跑第 1 套作为上线闸门（见 `deploy.yml`），本地 `npm test` 跑全部五套。
 
 ## ⚠️ 免责声明
 

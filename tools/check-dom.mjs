@@ -43,8 +43,9 @@ for (const [file, src] of Object.entries(sources)) {
 }
 
 // 反向检查：HTML 里声明了但 JS 从不使用、且看起来像是占位的关键 id
-// 这些 id 只用于语义标注（锚点、无障碍），不参与脚本逻辑，属于允许保留的名单
-const ID_ALLOWLIST = new Set(['form-panel', 'result-anchor']);
+// 这些 id 只用于语义标注（锚点、无障碍）或由 HTML 自身行为驱动（如 submit 按钮），
+// 不参与脚本逻辑，属于允许保留的名单
+const ID_ALLOWLIST = new Set(['form-panel', 'result-anchor', 'calc-btn']);
 const criticalIds = [...htmlIds].filter((id) => !id.startsWith('start-') && !id.startsWith('end-') && !ID_ALLOWLIST.has(id));
 const usedText = Object.values(sources).join('\n');
 for (const id of criticalIds) {

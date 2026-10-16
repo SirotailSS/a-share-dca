@@ -41,61 +41,90 @@ export function normalizeSeries(series) {
 /**
  * 年化 IRR（资金加权收益率），符号约定：投入为负、回收为正。
  *
- * 实现要点（都踩过坑，别改回去）：
- *   · 月率下界不能取 -1+ε：当折现期数 i 较大时 (1+r)^i 会下溢成 0，
- *     远期那笔正现金流除以 0 直接得到 Infinity/NaN，二分会静默返回 NaN。
- *     这里把下界放宽到 1e-9 这种绝对无意义的月率，等价于"年化 -100%"，
- *     任何真实数据都不可能触及。
- *   · 必须先用托底利率把区间"撑开"再二分，并在找到区间后再收敛一次，
- *     否则长达 30 年、几百期现金流的情形会因初值不夹根而失败。
+ * 数值细节（都踩过坑，别改回去）：
+ *   · 不用 NPV(r) = Σ cf_i / (1+r)^i 直接算。当 r 接近 -1 时 (1+r)^i 会下溢成 0，
+ *     远端现金流除零就变成 Infinity/NaN，二分会静默返回 NaN。
+ *     改用霍纳形式：NPV(r) · (1+r)^(n-1) = Σ cf_i · (1+r)^(n-1-i)，右边是普通多项式，
+ *     在 [-1, 0) 上完全良态；NPV 的符号与它一致，二分只需要符号。
+ *   · 初始区间 [-0.5, 1]（月率），没夹住根时向两侧放宽：
+ *     下界朝 -1 逼近（lo = -1 + (1+lo)/4），上界乘 4。
+ *     ⚠️ 这里的方向曾经写反（下界往上抬），导致"期末变现额 < 约 2×月供"的
+ *     极端亏损永远返回 NaN —— 那正是最该给出答案的情形。
+ *   · 真的夹不住时（例如 -100% 亏损这种退化情形）兜底到 -1（年化 -100%），
+ *     而不是 NaN：NaN 会让页面显示"—"并让称号系统退回默认档，属于静默错误。
  *
- * @param {number[]} flows 现金流数组，flows[0] 为 t=0 时刻（通常为 0）
+ * @param {number[]} flows 现金流数组，flows[0] 为 t=0 时刻
  * @param {number} periodsPerYear 每年期数（月度=12）
- * @returns {number} 年化收益率（小数，0.15 = 15%）；无解时返回 NaN
+ * @returns {number} 年化收益率（小数，0.15 = 15%）
  */
 export function irr(flows, periodsPerYear = 12) {
-  const npv = (r) => {
-    let s = 0;
-    for (let i = 0; i < flows.length; i++) {
-      if (flows[i] === 0) continue;
-      s += flows[i] / Math.pow(1 + r, i);
-    }
-    return s;
-  };
+  const n = flows.length;
+  if (n === 0) return NaN;
+
+  // 退化情形：整个区间的净现金流恒为 0 —— 典型是"起止同月"，
+  // 当月买入即按同一收盘价估价，投入与变现完全相抵。
+  // 此时收益率恰好是 0，而不是"无解"；返回 NaN 会让页面显示"—"、称号也退化。
+  // ⚠️ 这一判断必须放在"只有投入/只有回收"两个提前返回之前，
+  // 因为长度为 1 且值为 0 的数组同时满足那两个条件。
+  if (flows.every((f) => f === 0)) return 0;
+
+  const hasNegative = flows.some((f) => f < 0);
+  const positiveSum = flows.reduce((s, f) => (f > 0 ? s + f : s), 0);
+  const negativeSum = flows.reduce((s, f) => (f < 0 ? s + f : s), 0);
+
+  // 只有投入、没有任何回收：这是"全损"，年化就是 -100%。
+  // 不能返回 NaN —— 页面会显示"—"、称号系统会退回默认档，属于静默错误。
+  if (hasNegative && positiveSum === 0) return -1;
+  // 有投入也有回收才可能有内部收益率
+  if (!hasNegative || positiveSum <= 0) return NaN;
+
   const annualize = (rate) => Math.pow(1 + rate, periodsPerYear) - 1;
+  const MIN_RATE = -1 + 1e-9;
 
-  // 必须有正有负才可能有解
-  if (!flows.some((f) => f < 0) || !flows.some((f) => f > 0)) return NaN;
+  // 霍纳法：p(r) = Σ cf_i · (1+r)^(n-1-i)，与 NPV(r)·(1+r)^(n-1) 同号
+  const poly = (r) => {
+    const x = 1 + r;
+    let acc = 0;
+    for (let i = 0; i < n; i++) acc = acc * x + flows[i];
+    return acc;
+  };
+  const sign = (v) => (v > 0 ? 1 : v < 0 ? -1 : 0);
 
-  // 初始区间：月率 -50% ~ +100%（对应年化约 -99.98% ~ +4095%）。
-  // 下界不能取到接近 -1：那时 (1+r)^i 会下溢成 0，远端现金流除零产生 NaN，
-  // 二分就会静默失败；也不能取接近 0，否则"零收益"这类根会被排除在区间之外。
   let lo = -0.5;
   let hi = 1;
-  let npvLo = npv(lo);
-  let npvHi = npv(hi);
+  let slo = sign(poly(lo));
+  let shi = sign(poly(hi));
 
-  // 若初始区间没夹住根，就朝两侧逐步放宽（下限 -0.9999 是硬边界，再低没有数值意义）
-  let guard = 0;
-  while (npvLo * npvHi > 0 && guard++ < 80) {
-    if (lo > -0.9999) {
-      lo = lo > -1e-6 ? -1e-6 : -1 + (1 + lo) * 4;
-      if (lo < -0.9999) lo = -0.9999;
+  if (slo === 0) return annualize(lo);
+  if (shi === 0) return annualize(hi);
+
+  // 向两侧放宽，直到把根夹住
+  for (let guard = 0; guard < 120 && slo === shi; guard++) {
+    if (hi < 1e4) {
+      hi *= 4;
+      shi = sign(poly(hi));
+      if (shi === 0) return annualize(hi);
     }
-    if (hi < 1e6) hi *= 4;
-    npvLo = npv(lo);
-    npvHi = npv(hi);
-    if (!Number.isFinite(npvLo) || !Number.isFinite(npvHi)) break;
+    if (lo > MIN_RATE) {
+      lo = -1 + (1 + lo) / 4;
+      if (lo < MIN_RATE) lo = MIN_RATE;
+      slo = sign(poly(lo));
+      if (slo === 0) return annualize(lo);
+    }
   }
-  if (!Number.isFinite(npvLo) || !Number.isFinite(npvHi) || npvLo * npvHi > 0) return NaN;
+
+  // 夹不住：说明这个现金流在数值意义上退化。
+  // 按最后一段的净额方向给出合理的极端值，而不是 NaN。
+  if (slo === shi) {
+    // 总回收 < 总投入 → 亏损到接近 -100%；反之则收益极大
+    return positiveSum + negativeSum <= 0 ? -1 : annualize(hi);
+  }
 
   for (let i = 0; i < 200; i++) {
     const mid = (lo + hi) / 2;
-    const v = npv(mid);
-    if (!Number.isFinite(v)) return NaN;
-    if (v === 0) return annualize(mid);
-    if (npvLo * v < 0) hi = mid;
-    else { lo = mid; npvLo = v; }
+    const smid = sign(poly(mid));
+    if (smid === 0) return annualize(mid);
+    if (smid === slo) { lo = mid; slo = smid; } else { hi = mid; }
   }
   return annualize((lo + hi) / 2);
 }
@@ -242,14 +271,22 @@ export function simulate(opts) {
     else flows.push(0);
   }
   const years = (flowMiList[flowMiList.length - 1] - flowMiList[0] + 1) / 12;
+  // ⚠️ annualized 必须在 flows 构造完成之后再算。
+  // 这里曾经写在 return 的对象字面量里，而 flows 是在其下方才声明的，
+  // 属于暂时性死区（TDZ）：一进入 compute 就抛 ReferenceError，
+  // 被上层 catch 吞掉后页面显示的是"上一轮结果"，极难排查。
   const annualized = irr(flows, 12);
 
   // 简单口径（不折现）用于展示对比
   const simpleAnnualized = years > 0 ? Math.pow(1 + totalReturn, 1 / years) - 1 : NaN;
 
-  // 一次性买入对照：同样的总资金在首月月初一把梭
+  // 一次性买入对照：把"同样多的总资金"在首月一次买入。
+  // 为了让两者可比，这里也用同一套手续费规则处理这笔一次性买入：
+  // 否则开了手续费的定投会被白白多扣一笔钱，对比就不公平（小额时能差好几个百分点）。
   const firstTrade = trades[0];
-  const lumpShares = totalInvested / firstTrade.price;
+  let lumpFee = 0;
+  if (feeEnabled) lumpFee = Math.max(feeMin, totalInvested * feeRate);
+  const lumpShares = (totalInvested - lumpFee) / firstTrade.price;
   const lumpValue = lumpShares * priceEnd;
   const lumpReturn = totalInvested > 0 ? (lumpValue - totalInvested) / totalInvested : 0;
 

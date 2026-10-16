@@ -186,14 +186,32 @@ const { irr, simulate, normalizeSeries, monthIndex, monthLabel, simulateFromPara
 check('monthIndex/monthLabel 互逆',
   ['1999-01', '2007-10', '2016-01', '2026-10'].every((m) => monthLabel(monthIndex(m)) === m));
 
-// 3.1 IRR 闭式解
+// 3.1 IRR 闭式解与极端情形
 {
   near(irr([-100, ...Array(11).fill(0), 110], 12), 0.1, 1e-6, 'IRR：单笔一年 +10%');
   near(irr([-100, ...Array(23).fill(0), 200], 12), Math.SQRT2 - 1, 1e-6, 'IRR：两年翻倍 = sqrt(2)-1');
   near(irr([-100, ...Array(11).fill(0), 50], 12), -0.5, 1e-6, 'IRR：一年亏 50%');
   near(irr([-100, ...Array(119).fill(0), 300], 12), Math.pow(3, 1 / 10) - 1, 1e-6, 'IRR：十年三倍');
-  check('IRR：无正现金流返回 NaN', Number.isNaN(irr([-100, -100, -100], 12)));
-  check('IRR：无负现金流返回 NaN', Number.isNaN(irr([100, 100], 12)));
+  near(irr([...Array(24).fill(-1000), 24000], 12), 0, 1e-9, 'IRR：等比定投零收益');
+
+  // 极端亏损：期末变现额远小于月供 —— 这是曾经返回 NaN 的支路
+  // 投 3000 只拿回 1000，月率 = -2/3，年化 = (1/3)^12 - 1
+  near(irr([-3000, 1000], 12), Math.pow(1 / 3, 12) - 1, 1e-6, 'IRR：期末只拿回 1/3（曾返回 NaN）');
+  check('IRR：极端亏损结果优于 -100% 且为有限数',
+    Number.isFinite(irr([-3000, 1000], 12)) && irr([-3000, 1000], 12) > -1,
+    String(irr([-3000, 1000], 12)));
+
+  // 全损：只投入、没有任何回收 → 恰好 -100%，不能是 NaN
+  check('IRR：全损（回收为 0）返回 -100%', irr([-1000, -1000, 0], 12) === -1, String(irr([-1000, -1000, 0], 12)));
+  check('IRR：只有投入无回收返回 -100%', irr([-100, -100], 12) === -1, String(irr([-100, -100], 12)));
+  check('IRR：只有回收无投入返回 NaN', Number.isNaN(irr([100, 100], 12)));
+  check('IRR：空数组返回 NaN', Number.isNaN(irr([], 12)));
+
+  // 单期年化：1 期就赚 10% 意味着月率 10%，年化应为 1.1^12 - 1。
+  // 这类"只有一笔成交"的区间曾经整体返回 NaN（见 compute.js 的 irr 兜底）。
+  const one = irr([-1000, 1100], 12);
+  near(one, Math.pow(1.1, 12) - 1, 1e-9, 'IRR：单期 +10% 年化 = 1.1^12 - 1');
+  check('IRR：单期结果不再退化成 NaN', Number.isFinite(one));
 }
 
 // 3.2 定投手工推导
@@ -470,14 +488,19 @@ check('monthIndex/monthLabel 互逆',
   const baseSummary = {
     totalReturn: 0, profit: 0, annualized: 0, months: 12, totalInvested: 36000, finalValue: 36000,
     marketReturn: 0, lumpReturn: 0, worstProfitRate: 0, avgBuyPercentile: 0.5, idleCash: 0,
+    maxDrawdown: 0, finalShares: 0, fees: 0,
     startMonth: '2020-01', endMonth: '2020-12',
   };
+  // 夹具必须与 app.js 里生产的 ctx 形状一致：monetary 字段全在 summary 下，
+  // 顶层只放标的元信息与基准数据。
+  // 之前这里在顶层多塞了一个 maxDrawdown，正好把"成就读了不存在的字段"这个 bug 掩盖住了。
   const mkCtx = (over = {}) => ({
     summary: { ...baseSummary },
-    maxDrawdown: 0,
+    trades: [],
     stockCode: '600519',
     stockName: '贵州茅台',
     stockFirstMonth: '2001-08',
+    stockLastMonth: '2026-10',
     feeEnabled: false,
     hasBenchmark: false,
     benchmarkAnnualized: NaN,
@@ -486,26 +509,51 @@ check('monthIndex/monthLabel 互逆',
     ...over,
   });
 
+  // 生产 ctx 的形状契约：顶层只能是标的/基准元信息与两个辅助方法，
+  // 任何"金额/回撤/份额"之类的派生指标都必须挂在 summary 下。
+  const PRODUCTION_TOP_KEYS = new Set([
+    'summary', 'trades', 'yearly', 'curve', 'flows', 'warnings',
+    'stockCode', 'stockName', 'stockFirstMonth', 'stockLastMonth',
+    'feeEnabled', 'hasBenchmark', 'benchmarkAnnualized', 'rangeStart', 'rangeEnd',
+    'tradesTouched', 'startYearMonth',
+  ]);
+  const ctx = mkCtx();
+  const extraTop = Object.keys(ctx).filter((k) => !PRODUCTION_TOP_KEYS.has(k) && !k.startsWith('__'));
+  check('成就夹具的顶层字段与生产 ctx 一致', extraTop.length === 0, `多余字段：${extraTop.join(', ')}`);
+
+  // 逐项跑一遍所有成就，确保没有任何一个 test() 抛异常（字段名写错就会命中 undefined）
+  let threw = 0;
+  for (const a of ACHIEVEMENTS) {
+    try { a.test(mkCtx()); } catch (e) { threw++; console.log(`    成就 ${a.id} 抛错: ${e.message}`); }
+  }
+  check(`全部 ${ACHIEVEMENTS.length} 个成就的判定函数都能安全执行`, threw === 0, `${threw} 个抛错`);
+
+  // 回撤 66% 的账户必须解锁「钻石手」——这条曾经因为读错字段而永远为 false
   const leek = evaluateAchievements(mkCtx({
-    summary: { ...baseSummary, totalReturn: -0.62, profit: -22000, annualized: -0.5, months: 40 },
-    maxDrawdown: 0.66,
+    summary: { ...baseSummary, totalReturn: -0.62, profit: -22000, annualized: -0.5, months: 40, maxDrawdown: 0.66 },
   }));
   check('惨烈韭菜解锁"腰斩体验官"', leek.unlocked.some((a) => a.id === 'loss_half'));
+  check('惨烈韭菜解锁"钻石手"（回撤 66%、40 期）', leek.unlocked.some((a) => a.id === 'diamond_hands'));
   check('惨烈韭菜不该解锁"高位接盘侠"（分位 0.5）', !leek.unlocked.some((a) => a.id === 'buy_high'));
+  check('零持股不该解锁"精准抄底"（分位 0 的退化情形）',
+    !evaluateAchievements(mkCtx({ summary: { ...baseSummary, finalShares: 0, avgBuyPercentile: 0 } }))
+      .unlocked.some((a) => a.id === 'buy_low'));
 
   const god = evaluateAchievements(mkCtx({
     summary: {
       ...baseSummary, totalReturn: 5.2, profit: 900000, annualized: 0.45, months: 130,
       totalInvested: 390000, finalValue: 1290000, marketReturn: 3, lumpReturn: 3,
-      avgBuyPercentile: 0.1, idleCash: 350,
+      avgBuyPercentile: 0.1, idleCash: 350, maxDrawdown: 0.45, finalShares: 1000, fees: 320,
     },
-    maxDrawdown: 0.45,
     tradesTouched: () => true,
     hasBenchmark: true,
     benchmarkAnnualized: 0.1,
   }));
   check('神话账户解锁"五倍传说"', god.unlocked.some((a) => a.id === 'profit_five'));
   check('神话账户解锁"A股钉子户"', god.unlocked.some((a) => a.id === 'ten_years'));
+  check('神话账户解锁"钻石手"', god.unlocked.some((a) => a.id === 'diamond_hands'));
+  check('神话账户解锁"精准抄底"', god.unlocked.some((a) => a.id === 'buy_low'));
+  check('神话账户解锁"养活了券商"（手续费 320 元）', god.unlocked.some((a) => a.id === 'fee_eater'));
   check('神话账户解锁彩蛋"塑化剂里捡茅台"', god.unlocked.some((a) => a.id === 'moutai_2013'));
   check('神话账户解锁"跑赢沪深300"', god.unlocked.some((a) => a.id === 'beats_index'));
   check('神话账户成就分高于韭菜', god.score > leek.score, `${god.score} vs ${leek.score}`);
@@ -513,6 +561,17 @@ check('monthIndex/monthLabel 互逆',
 
   const noBench = evaluateAchievements(mkCtx({ summary: { ...baseSummary, totalReturn: 1, annualized: 0.3 } }));
   check('无基准数据时 beats_index 被锁定', noBench.locked.some((a) => a.id === 'beats_index' && a.lockedReason));
+
+  // 年化无解时的称号兜底：亏损账户不能拿到中性称号
+  const nanLoss = pickRank(NaN, -0.9, 3);
+  check('年化 NaN + 总收益 -90% → 落到亏损档而不是中性档',
+    ['leekking', 'rooftop', 'abyss', 'midleek'].includes(nanLoss.key), nanLoss.key);
+  const nanZeroYears = pickRank(NaN, 0.1, 0);
+  check('年化 NaN + 期限 0 → 不抛错', !!nanZeroYears && !!nanZeroYears.title);
+
+  const stats = achMod.achievementStats();
+  check('成就统计与列表一致', stats.total === ACHIEVEMENTS.length && stats.ranks === RANKS.length,
+    JSON.stringify(stats));
 }
 
 // ── 汇总 ───────────────────────────────────────────────────

@@ -113,18 +113,36 @@ export const RANKS = [
 
 /** 按年化收益率定档；并允许总收益率在边界处做一次向上取整（长期慢牛优待） */
 export function pickRank(annualized, totalReturn, years) {
-  if (!Number.isFinite(annualized)) {
-    return { ...RANKS.find((r) => r.key === 'flat'), reason: '数据不足，无法计算年化' };
+  const total = Number.isFinite(totalReturn) ? totalReturn : 0;
+
+  // 年化算不出来时（理论上不该发生，但必须兜底），
+  // 用总收益率估一个等效年化，而不是一律退回"平庸但没亏" ——
+  // 那会让一个亏掉 90% 的账户拿到中性称号，属于自相矛盾的展示。
+  let rate = annualized;
+  let reason = null;
+  if (!Number.isFinite(rate)) {
+    if (!Number.isFinite(years) || years <= 0) {
+      rate = total;
+      reason = '期限不足一年，改用总收益率定档';
+    } else if (total <= -1) {
+      rate = -1;
+      reason = '本金几乎全部亏损，按最差档处理';
+    } else {
+      rate = Math.pow(1 + total, 1 / years) - 1;
+      reason = '年化收益率无解，改用总收益率折算';
+    }
   }
-  let idx = RANKS.findIndex((r) => annualized >= r.min);
+
+  let idx = RANKS.findIndex((r) => rate >= r.min);
   if (idx === -1) idx = RANKS.length - 1;
   // 长期（≥8 年）且总收益率为正时，若年化只是"擦着"上一档的门槛（差 0.5 个百分点以内），
   // 就给一次升档照顾 —— 长期正收益本身就该被奖励。
-  if (years >= 8 && totalReturn > 0 && idx > 0) {
+  if (years >= 8 && total > 0 && idx > 0) {
     const higher = RANKS[idx - 1];
-    if (annualized >= higher.min - 0.005) idx -= 1;
+    if (rate >= higher.min - 0.005) idx -= 1;
   }
-  return RANKS[idx];
+  const rank = RANKS[idx];
+  return reason ? { ...rank, reason } : rank;
 }
 
 /**
@@ -213,7 +231,10 @@ export const ACHIEVEMENTS = [
     name: '钻石手',
     desc: '经历最大回撤 ≥ 40% 仍未放弃',
     rarity: 'epic',
-    test: (c) => c.maxDrawdown >= 0.4 && c.summary.months >= 24,
+    // 注意：最大回撤在 summary 里，不是 ctx 顶层。
+    // 这里曾写成 c.maxDrawdown（永远 undefined），导致这枚徽章永远解锁不了，
+    // 而当时的测试夹具在顶层也塞了一份 maxDrawdown，正好把它掩盖了。
+    test: (c) => c.summary.maxDrawdown >= 0.4 && c.summary.months >= 24,
   },
   {
     id: 'steel_heart',
@@ -229,7 +250,9 @@ export const ACHIEVEMENTS = [
     name: '精准抄底',
     desc: '平均买入价处于历史价格最低 20% 区间',
     rarity: 'epic',
-    test: (c) => c.summary.avgBuyPercentile <= 0.2,
+    // 必须真的买到过东西：零持股时 avgBuyPrice 会被兜底成 0，
+    // 而 0 的分位数天然是 0%（历史最低），会误判成"完美抄底"。
+    test: (c) => c.summary.finalShares > 0 && c.summary.avgBuyPercentile <= 0.2,
   },
   {
     id: 'buy_high',
@@ -237,7 +260,7 @@ export const ACHIEVEMENTS = [
     name: '高位接盘侠',
     desc: '平均买入价处于历史价格最高的 20% 区间',
     rarity: 'rare',
-    test: (c) => c.summary.avgBuyPercentile >= 0.8,
+    test: (c) => c.summary.finalShares > 0 && c.summary.avgBuyPercentile >= 0.8,
   },
   {
     id: 'tithe',
@@ -322,12 +345,15 @@ export const ACHIEVEMENTS = [
     test: (c) => c.tradesTouched(c.startYearMonth('2022-03'), c.startYearMonth('2022-11')),
   },
   {
-    id: 'one_share_forever',
-    emoji: '🍜',
-    name: '省出一碗面',
-    desc: '账户长期挂着没花掉的零钱（闲置余额 ≥ 200 元）',
+    id: 'fee_eater',
+    emoji: '🧾',
+    name: '养活了券商',
+    desc: '累计手续费 ≥ 200 元，且总收益仍为正',
     rarity: 'common',
-    test: (c) => c.summary.idleCash >= 200,
+    // 原来的判据是"账户闲置零钱 ≥200 元"。但定投允许零股买入，
+    // 每期只会剩下浮点残差（实测全库最大 2.9e-10），这枚徽章根本解锁不了。
+    // 换成同样"小钱"含义、但真实会累积的手续费。
+    test: (c) => c.summary.fees >= 200 && c.summary.profit > 0,
   },
   {
     id: 'index_500_bull',
@@ -416,4 +442,11 @@ export function achievementGrade(score) {
   if (score >= 8) return { label: '🥉 青铜成就猎人', desc: '已经开始上道了' };
   if (score >= 1) return { label: '🎈 成就新人', desc: '刚解锁第一个徽章' };
   return { label: '🫥 无成就', desc: '还没点亮任何徽章，换个参数试试' };
+}
+
+/** 成就总数与稀有度分布，供页面/文档展示，避免各处手写数字不同步 */
+export function achievementStats() {
+  const byRarity = { common: 0, rare: 0, epic: 0, legend: 0 };
+  for (const a of ACHIEVEMENTS) byRarity[a.rarity] = (byRarity[a.rarity] || 0) + 1;
+  return { total: ACHIEVEMENTS.length, ranks: RANKS.length, byRarity };
 }
