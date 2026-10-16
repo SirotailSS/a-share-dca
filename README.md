@@ -77,6 +77,12 @@ npm test
 
 > 也可以用最省事的经典方式：Source 选 `Deploy from a branch`，分支选 `main`、目录选 `/docs`。
 > 两种方式都行，`docs/` 里没有任何需要构建的东西。
+>
+> ⚠️ 注意：GitHub Pages 对**私有仓库**需要付费计划；免费账户请把仓库设为 Public。
+
+发布体积（全部静态资源，实测）：原始 216 KB，gzip 后 **73.6 KB**（压缩比 2.94x）。
+其中 `stocks.js` 123 KB / `style.css` 16 KB / 5 个 JS 模块合计 68 KB。
+没有任何第三方请求，首屏不需要网络往返。
 
 ## 🔄 更新行情数据
 
