@@ -41,7 +41,8 @@ function run(w, h) {
     child.stdout.on('data', (d) => { out += d.toString(); });
     child.on('error', () => resolve(null));
     child.on('exit', () => {
-      const m = /DCA_MEASURE_START([\s\S]*?)DCA_MEASURE_END/.exec(out);
+      // 探针脚本源码里也有这个标记，所以要求后面紧跟 JSON 对象
+      const m = /DCA_MEASURE_START(\{[\s\S]*?\})DCA_MEASURE_END/.exec(out);
       if (!m) { resolve(null); return; }
       try { resolve(JSON.parse(m[1])); } catch { resolve(null); }
     });

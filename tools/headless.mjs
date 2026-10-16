@@ -302,6 +302,22 @@ check('数据来源提示已写出', !!($id('data-meta') && $id('data-meta').tex
   $id('data-meta') && $id('data-meta').textContent);
 check('预设按钮已生成', !!($id('presets') && $id('presets').children.length >= 5), `${$id('presets') && $id('presets').children.length} 个`);
 
+// 金额输入框的浏览器原生约束：step 必须以 min 为基准点来算合法值。
+// 曾经写成 min="1" step="100"，合法值只有 1 + n×100（1、101 …… 2901、3001），
+// 于是 3000 / 5000 / 10000 全被判非法，浏览器直接弹「请输入有效值」。
+{
+  const amt = $id('amount');
+  const step = amt.getAttribute('step');
+  const min = Number(amt.getAttribute('min'));
+  const legal = (v) => Number.isInteger((v - min) / Number(step));
+  const typical = [1, 2, 100, 500, 999, 1000, 1500, 2500, 2901, 2999, 3000, 3001, 3333, 5000, 10000, 12345, 20000];
+  const rejected = typical.filter((v) => !legal(v));
+  check('金额框对常见整数都合法（step 不能配错 min）', rejected.length === 0,
+    `step=${step} min=${min}，被拒：${rejected.join(', ')}`);
+  check('金额框设置了上限（防止 1e308 变成 Infinity）', Number(amt.getAttribute('max')) > 0,
+    `max=${amt.getAttribute('max')}`);
+}
+
 // 点击每个预设按钮，验证都能算出结果且数字自洽
 const presets = ($id('presets') && $id('presets').children) || [];
 let presetOk = 0;

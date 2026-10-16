@@ -66,8 +66,17 @@
 
       <div class="field">
         <label for="amount">每月定投金额（元）</label>
-        <input id="amount" type="number" min="1" step="100" value="3000" inputmode="numeric">
+        <!--
+          step 必须是 1（或 any），绝不能写 step="100" 配 min="1"：
+          HTML5 的 step 以 min 为基准点，min=1 + step=100 的合法值只有
+          1、101、201 …… 2901、3001，反而把 3000 / 5000 这种整数判为非法，
+          浏览器会直接弹「请输入有效值」并阻止提交。这个坑非常反直觉。
+        -->
+        <input id="amount" type="number" min="1" max="1000000000" step="1"
+               value="3000" inputmode="numeric" autocomplete="off"
+               title="填任意整数金额，例如 3000 或 2901">
         <div id="amount-quick" class="chips"></div>
+        <div class="hint">可填任意整数金额，不必是 100 的倍数。</div>
       </div>
 
       <div class="field">

@@ -55,9 +55,10 @@ a-share-dca/
 │   ├── check-style.mjs      ← 静态检查：CSS 括号/变量/死类/图表高度
 │   ├── check-achievements.mjs ← 穷举扫描：确认 30 个徽章都存在可达路径
 │   ├── headless.mjs         ← 无头启动测试：真跑一遍页面逻辑
+│   ├── check-validity.mjs   ← 真实浏览器表单校验（含修复前/后对照实验）
 │   ├── measure.mjs          ← 真实浏览器布局量测（需完整权限）
 │   ├── screenshot.mjs       ← 真实浏览器截图（需完整权限）
-│   └── serve.mjs            ← 本地预览服务器（支持 ?measure=1 注入布局探针）
+│   └── serve.mjs            ← 本地预览服务器（支持 ?measure=1 / ?validate=1 注入探针）
 └── .github/workflows/deploy.yml
 ```
 
@@ -143,8 +144,16 @@ node tools/build-db.mjs --only 600519,000858   # 只更新指定标的
 5. `tools/headless.mjs`
    用几十行的 DOM 垫片把真的 `app.js` 跑起来，验证首屏渲染、
    6 个预设剧本、别名搜索、极端参数、手续费开关、敌意分享链接。
+6. `tools/check-validity.mjs`（需完整权限 + 本地服务器）
+   在真实浏览器里逐个给输入框塞"用户真会填的值"，读原生 `checkValidity()`。
+   这条检查来自一个真实 bug：金额框曾写成 `min="1" step="100"`，
+   而 HTML 的 `step` 以 `min` 为基准点，合法值只有 `1 + n×100`，
+   于是 3000 / 5000 / 10000 全被判非法、浏览器直接弹「请输入有效值」，
+   反而是 3001 / 2901 能通过。脚本会同时跑一遍"修复前属性"的对照实验，
+   确保这个回归测试本身没有失效。
 
-CI 里跑第 1 套作为上线闸门（见 `deploy.yml`），本地 `npm test` 跑全部五套。
+CI 里跑第 1 套作为上线闸门（见 `deploy.yml`），本地 `npm test` 跑前五套；
+第 6 套需要真实浏览器，单独跑 `npm run test:browser`（先确保 `node tools/serve.mjs 4173` 在跑）。
 
 ## ⚠️ 免责声明
 
