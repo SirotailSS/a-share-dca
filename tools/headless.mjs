@@ -197,13 +197,23 @@ const win = {
   clearTimeout: (h) => clearTimeout(h),
   console,
   history: { replaceState() {}, pushState() {} },
-  addEventListener() {},
-  removeEventListener() {},
   requestAnimationFrame: (fn) => setTimeout(() => fn(Date.now()), 0),
   matchMedia: () => ({ matches: false, addEventListener() {} }),
   Date,
   Intl,
   URLSearchParams,
+  // window 级事件：app.js 会监听 hashchange，需要能手动触发
+  _listeners: {},
+  addEventListener(type, fn) { (this._listeners[type] = this._listeners[type] || []).push(fn); },
+  removeEventListener(type, fn) {
+    const l = this._listeners[type] || [];
+    const i = l.indexOf(fn);
+    if (i >= 0) l.splice(i, 1);
+  },
+  dispatchEvent(type, ev = {}) {
+    for (const fn of this._listeners[type] || []) fn({ type, target: this, preventDefault() {}, ...ev });
+    return true;
+  },
 };
 
 win.window = win;
@@ -360,6 +370,38 @@ await new Promise((r) => setTimeout(r, 30));
 const afterFee = $id('hero-value').textContent;
 check('开启手续费后页面重算且不报错', !$id('error-note').textContent, $id('error-note').textContent);
 check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeFee} -> ${afterFee}`);
+
+// 恶意/损坏的分享链接：不能让页面进入非法状态
+const hashCases = [
+  '#c=600519&s=9999-99&e=0000-00&a=-5',
+  '#c=600519&s=abc&e=def&a=NaN',
+  '#c=999999&s=2020-01&e=2021-01',
+  '#c=600519&s=2025-01&e=2015-01&a=3000',
+  '#c=600519&f=1&fr=-3&fm=abc',
+  '#%E4%B8%8D%E5%AD%98%E5%9C%A8',
+];
+let hashOk = 0;
+for (const h of hashCases) {
+  locationStub.hash = h;
+  try {
+    win.dispatchEvent('hashchange');
+    await new Promise((r) => setTimeout(r, 30));
+    const note = $id('error-note').textContent;
+    const startY = $id('start-year').value;
+    const startM = $id('start-month').value;
+    const endY = $id('end-year').value;
+    const endM = $id('end-month').value;
+    const amount = Number($id('amount').value);
+    const monthsValid = /^\d{4}$/.test(startY) && /^\d{2}$/.test(startM) && /^\d{4}$/.test(endY) && /^\d{2}$/.test(endM);
+    const orderOk = `${endY}-${endM}` >= `${startY}-${startM}`;
+    if (!note && monthsValid && orderOk && amount > 0) hashOk++;
+    else console.log(`     链接失败 ${h} -> 错误="${note}" 月份=${startY}-${startM}~${endY}-${endM} 金额=${amount}`);
+  } catch (err) {
+    console.log(`     链接抛错 ${h}: ${err.message}`);
+  }
+}
+check(`恶意/损坏分享链接 ${hashCases.length} 例均被安全兜底`, hashOk === hashCases.length, `成功 ${hashOk}/${hashCases.length}`);
+locationStub.hash = '';
 
 console.log(`\n无头启动测试：${problems.length === 0 ? '全部通过' : problems.length + ' 项失败'}`);
 if (problems.length) {

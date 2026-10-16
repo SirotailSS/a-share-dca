@@ -225,6 +225,22 @@ function buildMonthSelects() {
 const getStartMonth = () => `${$('#start-year').value}-${$('#start-month').value}`;
 const getEndMonth = () => `${$('#end-year').value}-${$('#end-month').value}`;
 
+/**
+ * 把任意来源的字符串解析成合法月份。
+ * 分享链接里的参数是纯字符串比较，`#s=9999-99` 或 `#s=abc` 会让下拉框落到
+ * 一个不存在的选项上（select.value 赋非法值时浏览器会把它清空），
+ * 之后拼出来的月份就是 "-" 这种垃圾值。所以必须显式做数字与范围校验。
+ */
+function parseMonthParam(raw, lo, hi) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(raw || '').trim());
+  if (!m) return null;
+  const y = Number(m[1]);
+  const mo = Number(m[2]);
+  if (!(mo >= 1 && mo <= 12) || y < 1900 || y > 2200) return null;
+  const ym = `${y}-${m[2]}`;
+  return clampMonth(ym, lo, hi);
+}
+
 function setMonth(prefix, ym) {
   $(`#${prefix}-year`).value = ym.slice(0, 4);
   $(`#${prefix}-month`).value = ym.slice(5, 7);
@@ -597,21 +613,33 @@ function restoreFromHash() {
   }
   const s = state.stock;
   if (!s) return;
-  if (params.get('s')) setMonth('start', clampMonth(params.get('s'), s.firstMonth, s.lastMonth));
-  if (params.get('e')) setMonth('end', clampMonth(params.get('e'), s.firstMonth, s.lastMonth));
-  if (params.get('a')) $('#amount').value = params.get('a');
+  const startParam = parseMonthParam(params.get('s'), s.firstMonth, s.lastMonth);
+  const endParam = parseMonthParam(params.get('e'), s.firstMonth, s.lastMonth);
+  if (startParam) setMonth('start', startParam);
+  if (endParam) setMonth('end', endParam);
+  // 金额：只接受正数，避免 #a=-5 或 #a=abc 把输入框变成非法值
+  const amountParam = Number(params.get('a'));
+  if (Number.isFinite(amountParam) && amountParam > 0) {
+    $('#amount').value = String(Math.min(amountParam, 1e9));
+  }
   if (params.get('f') === '1') {
     $('#fee-toggle').checked = true;
     $('#fee-fields').classList.remove('hidden');
-    if (params.get('fr')) $('#fee-rate').value = params.get('fr');
-    if (params.get('fm')) $('#fee-min').value = params.get('fm');
+    const fr = Number(params.get('fr'));
+    if (Number.isFinite(fr) && fr >= 0) $('#fee-rate').value = String(Math.min(fr, 100));
+    const fm = Number(params.get('fm'));
+    if (Number.isFinite(fm) && fm >= 0) $('#fee-min').value = String(Math.min(fm, 1000));
   }
-  if (!params.get('s')) {
-    // 默认：最近 10 年
+  if (!startParam) {
+    // 默认：最近 10 年（或该标的的全部历史）
     const end = clampMonth(TODAY_MONTH, s.firstMonth, s.lastMonth);
     const startMi = Math.max(monthIndex(s.firstMonth), monthIndex(end) - 119);
     setMonth('end', end);
     setMonth('start', monthLabel(startMi));
+  }
+  // 起止顺序兜底：分享链接可能把两个参数写反
+  if (getEndMonth() < getStartMonth()) {
+    setMonth('end', getStartMonth());
   }
   setAmountQuick(Number($('#amount').value));
 }
