@@ -305,24 +305,35 @@ export function simulate(opts) {
   const calendarMonths = lastTradeMi - startMiUsed2 + 1;
   const calendarYears = calendarMonths / 12;
 
-  // 各年度盈亏（自然年）
+  // 各年度"当年赚了多少"（自然年）
+  // 定义：某年度的账户累计盈亏 − 上一年度末的账户累计盈亏。
+  // 不能直接用"年末市值 − 年末投入"，那样会把上一年已经赚到的钱重复计入。
   const yearly = [];
   const byYear = new Map();
   for (const p of curve) {
     const y = Math.floor(p.mi / 12);
-    if (!byYear.has(y)) byYear.set(y, { year: y, startInvested: p.invested, startValue: p.value, contributions: 0, endInvested: p.invested, endValue: p.value });
+    if (!byYear.has(y)) {
+      byYear.set(y, { year: y, endInvested: p.invested, endValue: p.value, contributions: 0, cumProfitStart: null, days: 0 });
+    }
     const rec = byYear.get(y);
     rec.endInvested = p.invested;
     rec.endValue = p.value;
+    rec.days++;
   }
   for (const t of trades) {
     const y = Math.floor(t.mi / 12);
     const rec = byYear.get(y);
     if (rec) rec.contributions += t.amount;
   }
-  for (const rec of [...byYear.values()].sort((a, b) => a.year - b.year)) {
-    rec.profit = rec.endValue - rec.endInvested;
+  const yearList = [...byYear.values()].sort((a, b) => a.year - b.year);
+  let prevCumProfit = 0;
+  for (const rec of yearList) {
+    const cumProfit = rec.endValue - rec.endInvested;
+    rec.cumProfit = cumProfit;
+    rec.cumProfitStart = prevCumProfit;
+    rec.profit = cumProfit - prevCumProfit; // 当年真正赚（亏）了多少
     rec.returnRate = rec.endInvested > 0 ? rec.profit / rec.endInvested : 0;
+    prevCumProfit = cumProfit;
     yearly.push(rec);
   }
 
