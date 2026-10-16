@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>A股定投模拟器 · 你是韭菜中的韭菜，还是吧菲特附体？</title>
+<meta name="description" content="输入起止年月和每月定投金额，用真实历史行情回测你的A股定投收益：总盈亏、年化收益率（IRR）、最大回撤，并颁发称号与成就。纯静态页面，娱乐为主。">
+<meta name="theme-color" content="#0b0e14">
+<meta property="og:title" content="A股定投模拟器 · 你会得到什么称号？">
+<meta property="og:description" content="用真实历史行情回测你的A股定投：总盈亏、年化、最大回撤，并颁发称号与成就。">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-logo">📈</span>
+      <div>
+        <h1>A股定投模拟器</h1>
+        <p class="tagline">用真实历史行情，回测你那笔"要是当年开始了就好了"的定投</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <button id="share-btn" type="button" class="btn btn-ghost">🔗 分享这组参数</button>
+    </div>
+  </div>
+  <div id="data-meta" class="data-meta">正在加载行情数据…</div>
+</header>
+
+<main class="layout">
+
+  <!-- ── 输入面板 ── -->
+  <section class="panel" id="form-panel" aria-label="定投参数设置">
+    <h2 class="panel-title">① 设定你的定投计划</h2>
+
+    <form id="form" autocomplete="off">
+      <div class="field stock-field">
+        <label for="stock-input">定投标的</label>
+        <input id="stock-input" type="text" placeholder="输入股票代码或名称，如 600519 / 茅台 / 沪深300" spellcheck="false">
+        <div id="stock-list" class="picker-list"></div>
+        <div id="recent-box" class="chips hidden"></div>
+        <div id="stock-tag" class="hint"></div>
+        <div id="stock-span" class="hint"></div>
+      </div>
+
+      <div class="field">
+        <label>定投区间</label>
+        <div class="range-row">
+          <div class="range-side">
+            <span class="range-label">从</span>
+            <select id="start-year" aria-label="开始年份"></select>
+            <select id="start-month" aria-label="开始月份"></select>
+          </div>
+          <span class="range-arrow">→</span>
+          <div class="range-side">
+            <span class="range-label">到</span>
+            <select id="end-year" aria-label="结束年份"></select>
+            <select id="end-month" aria-label="结束月份"></select>
+          </div>
+        </div>
+        <div id="range-note" class="hint"></div>
+      </div>
+
+      <div class="field">
+        <label for="amount">每月定投金额（元）</label>
+        <input id="amount" type="number" min="1" step="100" value="3000" inputmode="numeric">
+        <div id="amount-quick" class="chips"></div>
+      </div>
+
+      <div class="field">
+        <label class="switch">
+          <input id="fee-toggle" type="checkbox">
+          <span>计入交易手续费（更接近真实）</span>
+        </label>
+        <div id="fee-fields" class="fee-fields hidden">
+          <label>费率<input id="fee-rate" type="number" min="0" step="0.1" value="2.5"><span class="unit">‱ 万分之</span></label>
+          <label>单笔最低<input id="fee-min" type="number" min="0" step="1" value="5"><span class="unit">元</span></label>
+        </div>
+      </div>
+
+      <button id="calc-btn" type="submit" class="btn btn-primary">🧮 计算我的定投人生</button>
+      <div id="error-note" class="error-note"></div>
+    </form>
+
+    <div class="field presets-field">
+      <label>懒得想？试试这些经典剧本</label>
+      <div id="presets" class="chips"></div>
+    </div>
+
+    <div class="method">
+      <h3>怎么算的？</h3>
+      <ul>
+        <li><b>真实历史行情</b>：内置 64 只 A 股与 ETF 的月度<b>后复权</b>价格，最长的从 1991 年开始。后复权意味着分红按除权日价格再投资、送转股全部还原，所以「期末价 ÷ 买入价」就是含分红的真实收益。</li>
+        <li><b>定投规则</b>：每月最后一个交易日按收盘价买入，允许零股（与基金定投一致）。</li>
+        <li><b>年化收益率</b>：用资金加权收益率（IRR），每笔投入按实际时点折现后求解，不是简单的"总收益 ÷ 年数"，这也是基金 App 上"年化收益"的真实口径。</li>
+        <li><b>最大回撤</b>：账户市值相对历史最高点的最大跌幅，用来衡量你在过程中要忍受多大的心理折磨。</li>
+      </ul>
+    </div>
+  </section>
+
+  <!-- ── 结果面板 ── -->
+  <section class="results" id="result-anchor">
+    <div id="placeholder" class="placeholder">
+      <div class="ph-emoji">🪧</div>
+      <p>选好标的和区间，点上面的按钮，你的称号就在前面等着。</p>
+    </div>
+
+    <div id="result" class="hidden">
+      <div class="panel verdict-panel">
+        <h2 class="panel-title">② 你的定投人生总结</h2>
+        <div class="rank-badge" id="rank-badge">
+          <div class="rank-emoji" id="rank-emoji">🥬</div>
+          <div class="rank-body">
+            <div class="rank-kicker">获得称号</div>
+            <div class="rank-title" id="rank-title">韭菜中的韭菜</div>
+            <div class="rank-quote" id="rank-quote"></div>
+            <div class="rank-desc" id="rank-desc"></div>
+          </div>
+        </div>
+        <p class="verdict" id="verdict"></p>
+      </div>
+
+      <div class="hero-grid">
+        <div class="hero-card">
+          <div class="hero-label">总盈亏</div>
+          <div class="hero-value" id="hero-profit">—</div>
+          <div class="hero-sub" id="hero-return">—</div>
+        </div>
+        <div class="hero-card">
+          <div class="hero-label">年化收益率（IRR）</div>
+          <div class="hero-value" id="hero-annual">—</div>
+          <div class="hero-sub muted">资金加权口径</div>
+        </div>
+        <div class="hero-card small">
+          <div class="hero-label">累计投入</div>
+          <div class="hero-mini" id="hero-invested">—</div>
+          <div class="hero-label mt">期末市值</div>
+          <div class="hero-mini" id="hero-value">—</div>
+        </div>
+        <div class="hero-card small">
+          <div class="hero-label">定投期数</div>
+          <div class="hero-mini" id="hero-months">—</div>
+          <div class="hero-label mt">每月定投</div>
+          <div class="hero-mini" id="hero-amount">—</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title">③ 账户曲线</h2>
+        <div id="chart" class="chart-box"></div>
+        <div class="legend">
+          <span class="lg"><i class="sw sw-value"></i>账户市值</span>
+          <span class="lg"><i class="sw sw-invested"></i>累计投入</span>
+          <span class="lg muted">鼠标移到图上可查看任意月份的明细</span>
+        </div>
+        <h3 class="sub-title">年度盈亏（万元）</h3>
+        <div id="year-bars" class="year-bars"></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head">
+          <h2 class="panel-title">④ 称号与成就</h2>
+          <div class="ach-head-right">
+            <span id="ach-grade" class="ach-grade">—</span>
+            <span id="ach-score" class="ach-score"></span>
+            <span id="ach-count" class="ach-count"></span>
+          </div>
+        </div>
+        <p class="sub-desc" id="ach-grade-desc"></p>
+        <ul id="ach-list" class="ach-list"></ul>
+        <details class="ach-more">
+          <summary>还有这些徽章没解锁</summary>
+          <ul id="ach-locked" class="ach-list locked-list"></ul>
+        </details>
+      </div>
+
+      <div class="panel">
+        <h2 class="panel-title">⑤ 明细数据</h2>
+        <div id="detail-table" class="detail-table"></div>
+        <button id="copy-summary" type="button" class="btn btn-ghost wide">📋 复制文字版战绩</button>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer class="footer">
+  <p><b>免责声明</b>：本项目纯属娱乐，全部数据来自公开行情接口，计算基于历史价格，<b>历史业绩不代表未来收益</b>，页面任何内容都不构成投资建议。</p>
+  <p class="muted">后复权价格已包含分红再投资假设；实际定投还会遇到停牌、分红税、申赎费用、指数基金跟踪误差等摩擦，结果仅供参玩。</p>
+  <p class="muted">技术栈：原生 HTML/CSS/JS + 自绘 SVG 图表，零第三方依赖，可直接托管在 GitHub Pages。</p>
+</footer>
+
+<script src="data/stocks.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>

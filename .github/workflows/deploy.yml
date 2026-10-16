@@ -1,0 +1,51 @@
+name: Deploy to GitHub Pages
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# 同一仓库只保留最新一次部署，避免旧构建覆盖新构建
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      # 数据库是提交进仓库的（docs/data/stocks.js），这里只跑自检，
+      # 确认解码 / 计算引擎 / 称号成就三部分都没坏再上线。
+      # 想每次部署都拉最新行情，就把下一行的注释去掉（需要能访问腾讯行情接口）。
+      - name: 自检（解码 / 计算引擎 / 称号成就）
+        run: node tools/selftest.mjs
+
+      # - name: 刷新行情数据库
+      #   run: node tools/build-db.mjs
+
+      - uses: actions/configure-pages@v5
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
