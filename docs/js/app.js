@@ -34,6 +34,9 @@ const state = {
   lastResult: null,
   chart: null,
   recent: [],
+  hasShownResult: false, // 是否已经向用户揭晓过结果（决定动画长短与过期提示）
+  runSeq: 0,             // 计算序号，用来作废被取代的那次揭晓动画
+  previewReady: false,   // 首屏静默预演是否已完成
 };
 
 // 把状态挂到 window 上，方便自动化测试与线上排查（只读用途，页面逻辑不依赖它）
@@ -80,7 +83,9 @@ async function init() {
   setEndMode('liquidate'); // 默认口径：截止月全部卖出（最无歧义的读法）
   restoreFromHash();
   bindEvents();
-  run({ silent: true });
+  // 首屏静默算一遍（只为把分享链接里的参数校验干净、并把标的备注渲染好），
+  // 但**不显示结果**：结果必须由用户按下按钮才揭晓。
+  run({ preview: true });
 }
 
 // ── 标的检索与选择 ──────────────────────────────────────────
@@ -339,38 +344,58 @@ function updateEndModeNote() {
 }
 
 // ── 事件绑定 ────────────────────────────────────────────────
+/**
+ * 参数变动后**不再自动重算**，只把上一次的结果标记为"已过期"。
+ * 这样"计算"按钮才有存在意义，也保住了结果揭晓的仪式感。
+ */
+function onParamChanged() {
+  if (!state.hasShownResult) return; // 还没算过，没什么可过期的
+  // 用户要求减少动态效果时不做动画，也就没有"演出期间偷偷重算"的问题，
+  // 直接跟随输入实时更新即可。
+  if (prefersReducedMotion()) {
+    run({ silent: true });
+    return;
+  }
+  $('#result').classList.add('result-stale');
+  const btn = $('#calc-btn');
+  if (!btn.disabled) btn.textContent = '🔄 重新计算（参数已改）';
+}
+
 function bindEvents() {
   // 只绑定 form 的 submit：按钮是 type=submit，如果这里再绑一次 click，
   // 点一下会同时触发 click 与 submit，run() 跑两遍、图表重建两次。
   $('#form').addEventListener('submit', (e) => {
     e.preventDefault();
-    run();
+    run({ reveal: true });
   });
 
   // 截止月语义：两个分段按钮是 type=button，不会触发表单提交，单独绑定
   $$('#end-mode .seg').forEach((btn) => {
     btn.addEventListener('click', () => {
       setEndMode(btn.dataset.mode);
-      run();
+      onParamChanged();
     });
   });
   for (const id of ['#start-year', '#start-month', '#end-year', '#end-month', '#fee-rate', '#fee-min']) {
     $(id).addEventListener('change', () => {
       if (id.startsWith('#end-')) updateEndModeNote();
-      run();
+      onParamChanged();
     });
   }
   $('#fee-toggle').addEventListener('change', () => {
     $('#fee-fields').classList.toggle('hidden', !$('#fee-toggle').checked);
-    run();
+    onParamChanged();
   });
   $('#amount').addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       e.preventDefault();
-      run();
+      run({ reveal: true });
     }
   });
-  $('#amount').addEventListener('input', () => setAmountQuick(Number($('#amount').value)));
+  $('#amount').addEventListener('input', () => {
+    setAmountQuick(Number($('#amount').value));
+    onParamChanged();
+  });
 
   const quick = $('#amount-quick');
   for (const v of [1000, 3000, 5000, 10000, 20000]) {
@@ -382,7 +407,7 @@ function bindEvents() {
     b.addEventListener('click', () => {
       $('#amount').value = String(v);
       setAmountQuick(v);
-      run();
+      onParamChanged();
     });
     quick.appendChild(b);
   }
@@ -391,11 +416,147 @@ function bindEvents() {
   $('#copy-summary').addEventListener('click', copySummary);
   window.addEventListener('hashchange', () => {
     restoreFromHash();
-    run({ silent: true });
+    onParamChanged();
   });
 }
 
+// ── 计算动画 ────────────────────────────────────────────────
+/**
+ * 计算本身是毫秒级的，但"瞬间出结果"毫无仪式感。
+ * 这里把过程显式演出来：依次点亮几个步骤，再揭晓结果。
+ * 首次计算演全套，重复计算演缩短版（用户已经知道流程了）。
+ */
+const RUN_STEPS = [
+  '载入历史行情',
+  '逐月模拟买入',
+  '计算资金加权年化',
+  '评定称号与成就',
+];
+const REVEAL_MS_FIRST = 1900; // 首次：完整演出
+const REVEAL_MS_AGAIN = 800;  // 复算：快速过一遍
+
+const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+
+function prefersReducedMotion() {
+  try {
+    return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+  } catch { return false; }
+}
+
+/** 渲染计算动画：填充步骤列表并让进度条动起来 */
+function beginLoader(long) {
+  const loader = $('#loader');
+  const steps = $('#loader-steps');
+  const title = $('#loader-title');
+  const fill = $('#loader-fill');
+  if (!loader || !steps) return;
+
+  steps.innerHTML = '';
+  RUN_STEPS.forEach((label, i) => {
+    const li = document.createElement('li');
+    li.textContent = label;
+    li.dataset.step = String(i);
+    steps.appendChild(li);
+  });
+  title.textContent = `${long ? '正在' : '重新'}${RUN_STEPS[0]}…`;
+  fill.style.width = '0%';
+  loader.classList.remove('hidden');
+}
+
+/**
+ * 按时间推进动画步骤；返回一个可 await 的 Promise。
+ *
+ * 这里用**自调度的 setTimeout 链**而不是 setInterval：
+ *   · 任意时刻只挂一个定时器，收尾时就地清空句柄，不会留下"还在等"的定时器
+ *     —— 早先用 setInterval + 独立兜底 timeout，正常完成路径没清掉兜底，
+ *     浏览器里是残留定时器，Node 里直接导致进程无法退出；
+ *   · setInterval 的回调抛错会静默空转，这里每一跳都在 try 里，出错立即收尾。
+ * 无论走哪条路径都保证：定时器清干净 + Promise 一定 settle。
+ */
+function animateLoader(long) {
+  const total = long ? REVEAL_MS_FIRST : REVEAL_MS_AGAIN;
+  const fill = $('#loader-fill');
+  const title = $('#loader-title');
+  const items = $$('#loader-steps li');
+
+  return new Promise((resolve) => {
+    if (items.length === 0) { resolve(); return; }
+
+    const start = Date.now();
+    let done = false;
+    let handle = null;
+    let guard = null;
+
+    const settle = () => {
+      if (done) return;
+      done = true;
+      if (handle !== null) { clearTimeout(handle); handle = null; }
+      if (guard !== null) { clearTimeout(guard); guard = null; }
+      items.forEach((li) => { li.classList.remove('active'); li.classList.add('done'); });
+      if (fill) fill.style.width = '100%';
+      if (title) title.textContent = '称号已评定';
+      resolve();
+    };
+
+    const step = () => {
+      handle = null;
+      if (done) return;
+      try {
+        const p = Math.min(1, (Date.now() - start) / total);
+        if (fill) fill.style.width = `${(p * 100).toFixed(1)}%`;
+        const doneCount = Math.min(items.length, Math.floor(p * items.length));
+        items.forEach((li, i) => {
+          li.classList.toggle('done', i < doneCount || p >= 1);
+          li.classList.toggle('active', i === doneCount && p < 1);
+        });
+        const current = Math.min(items.length - 1, doneCount);
+        if (title && p < 1) title.textContent = `正在${RUN_STEPS[current]}…`;
+        if (p >= 1) { settle(); return; }
+      } catch {
+        settle(); // 动画出错绝不能连累结果展示
+        return;
+      }
+      handle = setTimeout(step, 40);
+    };
+
+    handle = setTimeout(step, 40);
+    // 兜底：定时器被节流/暂停（切标签页等）时也要收尾，绝不把结果永久卡住
+    guard = setTimeout(settle, total + 2000);
+  });
+}
+
+/** 揭晓：让称号卡与数字卡依次登场 */
+function playReveal(long) {
+  const badge = $('#rank-badge');
+  const cards = $$('#result .hero-card');
+  const achItems = $$('#ach-list .ach-item');
+
+  badge.classList.remove('reveal');
+  cards.forEach((c) => { c.classList.remove('reveal'); c.style.animationDelay = ''; });
+  achItems.forEach((c) => { c.classList.remove('reveal'); c.style.animationDelay = ''; });
+
+  if (prefersReducedMotion()) return; // 尊重系统设置，不做动画
+
+  // 强制回流一次，保证重复计算时动画会重新播放
+  void badge.offsetWidth;
+  badge.classList.add('reveal');
+  cards.forEach((c, i) => {
+    c.style.animationDelay = `${160 + i * 90}ms`;
+    c.classList.add('reveal');
+  });
+  achItems.slice(0, 12).forEach((c, i) => {
+    c.style.animationDelay = `${340 + i * 45}ms`;
+    c.classList.add('reveal');
+  });
+  void long;
+}
+
 // ── 计算并渲染 ──────────────────────────────────────────────
+/**
+ * @param {{preview?:boolean, reveal?:boolean}} [opts]
+ *   preview —— 首屏静默算一遍：不显示结果、不动结果区（只为校验参数 + 渲染标的备注）
+ *   reveal  —— 用户按下"计算"：演出计算动画后再揭晓结果
+ */
 function run(opts = {}) {
   if (!state.stock) {
     selectStock(PRESETS[0].code);
@@ -464,11 +625,65 @@ function run(opts = {}) {
   const ach = evaluateAchievements(ctx);
 
   state.lastResult = { result, rank, ach, ctx, form, benchmarkAnnualized };
-  render(result, rank, ach, ctx, benchmarkAnnualized);
-  writeHash(form, state.stock.code);
-  if (!opts.silent) {
-    $('#result').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  // 注意：这里**不**写 hash，避免触发 hashchange 造成重算死循环（详见 writeHash 注释）。
+
+  // ── 首屏静默预演：只确保可算，不揭晓任何东西 ──
+  if (opts.preview) {
+    state.previewReady = true;
+    return;
   }
+
+  // ── 演出 ──
+  const long = !state.hasShownResult; // 首次演全套
+  const runId = ++state.runSeq;
+  state.hasShownResult = true;
+
+  render(result, rank, ach, ctx, benchmarkAnnualized);
+  $('#placeholder').classList.add('hidden');
+  $('#result').classList.remove('result-stale');
+  // 新一轮演出开始：先收回结果，避免上一次的内容在动画期间露出来
+  $('#result').classList.remove('result-shown');
+  const btn = $('#calc-btn');
+  const reduced = prefersReducedMotion();
+  btn.textContent = '⏳ 正在计算…';
+  btn.disabled = true;
+
+  // 用户要求减少动态效果：不做进度演出，快速直达结果
+  if (reduced) {
+    $('#loader').classList.add('hidden');
+    $('#result').classList.add('result-shown');
+    btn.textContent = '🔄 再算一次';
+    btn.disabled = false;
+    return;
+  }
+
+  beginLoader(long);
+  if (!opts.silent) {
+    // 用平滑滚动把演出带到视野里；尊重"减少动态效果"
+    try {
+      $('#result-anchor').scrollIntoView({
+        behavior: prefersReducedMotion() ? 'auto' : 'smooth',
+        block: 'start',
+      });
+    } catch { /* 老浏览器忽略 */ }
+  }
+
+  animateLoader(long)
+    .then(() => {
+      if (runId !== state.runSeq) return undefined; // 被新的一次计算取代，放弃这次揭晓
+      $('#loader').classList.add('hidden');
+      $('#result').classList.add('result-shown');
+      playReveal(long);
+      return delay(prefersReducedMotion() ? 0 : 420);
+    })
+    .catch(() => { /* 动画失败不影响结果展示 */ })
+    .finally(() => {
+      if (runId !== state.runSeq) return;
+      $('#loader').classList.add('hidden');
+      $('#result').classList.add('result-shown');
+      btn.textContent = '🔄 再算一次';
+      btn.disabled = false;
+    });
 }
 
 function render(r, rank, ach, ctx, benchmarkAnnualized) {
@@ -663,6 +878,14 @@ async function copySummary() {
 }
 
 // ── URL 状态 ────────────────────────────────────────────────
+/**
+ * 把当前参数写进地址栏 hash，方便用户直接复制分享。
+ *
+ * ⚠️ 只在**用户按下"分享"时**调用，绝不能在 run() 里自动调用：
+ * 改 hash 会在某些环境触发 hashchange 事件，而 hashchange 处理器又会去读参数并重算，
+ * 于是形成 onParamChanged → run → 改 hash → hashchange → onParamChanged 的死循环。
+ * 这个坑在"减少动态效果"分支里会立刻变成无限递归（那里重算是同步的）。
+ */
 function writeHash(form, code) {
   const params = new URLSearchParams({
     c: code,

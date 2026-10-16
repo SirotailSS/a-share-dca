@@ -310,8 +310,116 @@ select { cursor: pointer; padding: 9px 8px; }
   text-align: center;
   color: var(--text-mute);
 }
+.placeholder b { color: var(--accent); }
 .ph-emoji { font-size: 42px; margin-bottom: 8px; }
+.ph-sub { margin-top: 6px; font-size: 12.5px; opacity: 0.75; }
 .hidden { display: none !important; }
+
+/* 结果区揭晓动画：默认不可见、不可聚焦，只有算出结果后才整体淡入上浮 */
+#result {
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(14px);
+}
+#result.result-shown {
+  opacity: 1;
+  visibility: visible;
+  transform: none;
+  transition: opacity 0.45s ease, transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* 参数被改过、但还没重新计算：把旧结果压暗并提示，而不是静默留着误导人 */
+#result.result-stale > .panel,
+#result.result-stale > .hero-grid {
+  opacity: 0.42;
+  filter: saturate(0.5);
+  transition: opacity 0.2s, filter 0.2s;
+}
+.stale-note {
+  display: none;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 10px 14px;
+  border-radius: 10px;
+  border: 1px dashed rgba(245, 196, 81, 0.5);
+  background: rgba(245, 196, 81, 0.07);
+  color: var(--accent);
+  font-size: 13px;
+}
+#result.result-stale .stale-note { display: flex; }
+
+/* ── 计算动画 ─────────────────────────────────────────── */
+.loader { padding: 26px 24px; }
+.loader-head { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+.loader-dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--accent);
+  box-shadow: 0 0 0 0 rgba(245, 196, 81, 0.55);
+  animation: pulse 1.1s ease-out infinite;
+}
+@keyframes pulse {
+  0% { box-shadow: 0 0 0 0 rgba(245, 196, 81, 0.5); }
+  100% { box-shadow: 0 0 0 12px rgba(245, 196, 81, 0); }
+}
+.loader-title { font-size: 15px; font-weight: 600; color: var(--text); }
+.loader-bar {
+  height: 6px;
+  border-radius: 999px;
+  background: #0e1219;
+  border: 1px solid var(--line);
+  overflow: hidden;
+}
+.loader-fill {
+  display: block;
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+}
+.loader-steps {
+  list-style: none;
+  margin: 16px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-mute);
+}
+.loader-steps li { display: flex; align-items: center; gap: 8px; }
+.loader-steps li::before { content: '○'; font-size: 11px; }
+.loader-steps li.done { color: var(--text-dim); }
+.loader-steps li.done::before { content: '✓'; color: var(--accent); }
+.loader-steps li.active { color: var(--text); }
+.loader-steps li.active::before { content: '◍'; color: var(--accent); }
+
+/* 称号卡与数字卡的依次登场 */
+.rank-badge.reveal { animation: revealRank 0.55s cubic-bezier(0.22, 1, 0.36, 1) both; }
+@keyframes revealRank {
+  0% { opacity: 0; transform: scale(0.94) translateY(10px); }
+  60% { opacity: 1; transform: scale(1.015) translateY(0); }
+  100% { opacity: 1; transform: scale(1) translateY(0); }
+}
+.rank-badge.reveal .rank-emoji { animation: popEmoji 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) both; }
+@keyframes popEmoji {
+  0% { transform: scale(0.4) rotate(-12deg); opacity: 0; }
+  100% { transform: scale(1) rotate(0); opacity: 1; }
+}
+.hero-card.reveal { animation: revealCard 0.42s ease both; }
+@keyframes revealCard {
+  0% { opacity: 0; transform: translateY(12px); }
+  100% { opacity: 1; transform: none; }
+}
+.ach-item.reveal { animation: revealCard 0.36s ease both; }
+
+/* 尊重系统的"减少动态效果"设置：不要用动画折磨人 */
+@media (prefers-reduced-motion: reduce) {
+  #result, #result.result-shown { transition: none; transform: none; }
+  .rank-badge.reveal, .rank-badge.reveal .rank-emoji,
+  .hero-card.reveal, .ach-item.reveal { animation: none; }
+  .loader-dot { animation: none; }
+}
 
 /* 称号 */
 .rank-badge {

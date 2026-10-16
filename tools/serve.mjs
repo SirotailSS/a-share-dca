@@ -53,6 +53,12 @@ const server = http.createServer(async (req, res) => {
         injectValidator(data.toString('utf8'), url.searchParams.get('validate') === 'legacy'),
         'utf8'
       );
+    } else if (ext === '.html' && url.searchParams.get('autocalc')) {
+      // 只给本地截图用：延迟一段时间后自动按下"计算"，
+      // 配合 chrome --virtual-time-budget 就能定格到演出中的某一帧。
+      const ms = Number(url.searchParams.get('autocalc')) || 0;
+      const probe = `<script>setTimeout(function(){var f=document.querySelector('#form');if(f)f.dispatchEvent(new Event('submit',{bubbles:true,cancelable:true}));},${ms});</script>`;
+      data = Buffer.from(data.toString('utf8').replace('</body>', probe + '\n</body>'), 'utf8');
     }
 
     res.writeHead(200, {

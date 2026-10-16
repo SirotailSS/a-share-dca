@@ -131,15 +131,33 @@
   </section>
 
   <!-- ── 结果面板 ── -->
+  <!--
+    仪式感设计：结果区默认完全不出现，只有按下"计算"并跑完一段演出才揭晓。
+    之前的实现是每次改参数都实时刷新右侧，按钮形同虚设、也毫无期待感。
+  -->
   <section class="results" id="result-anchor">
     <div id="placeholder" class="placeholder">
-      <div class="ph-emoji">🪧</div>
-      <p>选好标的和区间，点上面的按钮，你的称号就在前面等着。</p>
+      <div class="ph-emoji">🎬</div>
+      <p>左边选好标的和区间，然后按下 <b>「计算我的定投人生」</b>。</p>
+      <p class="ph-sub">历史行情已经就位，就差你这一下。</p>
+    </div>
+
+    <!-- 计算动画 -->
+    <div id="loader" class="panel loader hidden" aria-live="polite">
+      <div class="loader-head">
+        <span class="loader-dot"></span>
+        <span id="loader-title" class="loader-title">正在翻开历史行情…</span>
+      </div>
+      <div class="loader-bar"><span id="loader-fill" class="loader-fill"></span></div>
+      <ul id="loader-steps" class="loader-steps"></ul>
     </div>
 
     <div id="result" class="hidden">
       <div class="panel verdict-panel">
         <h2 class="panel-title">② 你的定投人生总结</h2>
+        <div class="stale-note" id="stale-note">
+          ⚠️ 参数已改动，下面的结果还是上一次的 —— 再按一次「计算我的定投人生」刷新。
+        </div>
         <div class="rank-badge" id="rank-badge">
           <div class="rank-emoji" id="rank-emoji">🥬</div>
           <div class="rank-body">

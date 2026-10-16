@@ -55,8 +55,8 @@ class El {
     this.dataset = {};
     this._text = '';
     this._html = '';
+    this._className = attrs.class || '';
     this.value = attrs.value !== undefined ? String(attrs.value) : '';
-    this.className = attrs.class || '';
     this.id = attrs.id || '';
     this.checked = false;
     this.listeners = {};
@@ -71,6 +71,14 @@ class El {
       }
     }
   }
+  // className / classList / getAttribute('class') 三者必须始终一致。
+  // 之前它们是各写各的，导致"改完 class 再读 getAttribute"拿到旧值，
+  // 调试时被这个假象误导了很久。
+  get className() { return this._className; }
+  set className(v) {
+    this._className = String(v);
+    this.attributes.class = this._className;
+  }
   get textContent() { return this._text; }
   set textContent(v) { this._text = String(v); this.children = []; }
   get innerHTML() { return this._html; }
@@ -83,7 +91,12 @@ class El {
   }
   get offsetWidth() { return 100; }
   get offsetHeight() { return 40; }
-  setAttribute(k, v) { this.attributes[k] = String(v); if (k === 'id') this.id = String(v); if (k === 'class') this.className = String(v); }
+  setAttribute(k, v) {
+    const val = String(v);
+    this.attributes[k] = val;
+    if (k === 'id') this.id = val;
+    if (k === 'class') this.className = val; // 走 setter，保持三者一致
+  }
   getAttribute(k) { return this.attributes[k]; }
   removeAttribute(k) { delete this.attributes[k]; }
   appendChild(c) { c.parentNode = this; this.children.push(c); return c; }
@@ -245,7 +258,16 @@ const win = {
   console,
   history: { replaceState() {}, pushState() {} },
   requestAnimationFrame: (fn) => setTimeout(() => fn(Date.now()), 0),
-  matchMedia: () => ({ matches: false, addEventListener() {} }),
+  // 让页面走"减少动态效果"分支：跳过进度演出、直达结果。
+  // 这样测试不必等待动画，也不会因为时序抖动而变成 flaky。
+  // 动画分支本身另有专门的断言（见下方"揭晓仪式"一节，用 matches:false 复现）。
+  _reduceMotion: true,
+  matchMedia: (q) => ({
+    matches: /prefers-reduced-motion/.test(q) ? !!win._reduceMotion : false,
+    media: q,
+    addEventListener() {},
+    removeEventListener() {},
+  }),
   Date,
   Intl,
   URLSearchParams,
@@ -320,6 +342,9 @@ const appCode = appSrc
   .replace(/^export\s+/gm, '');
 
 console.log('=== 无头启动测试 ===');
+process.on('unhandledRejection', (e) => {
+  console.log('[warn] 未处理的 Promise 拒绝:', (e && e.message) || e);
+});
 const errors = [];
 win.console = {
   ...console,
@@ -349,16 +374,16 @@ const $$ = (sel) => domRoot._find(sel, false);
 const $id = (id) => domRoot._find('#' + id, true);
 check('错误提示区为空', !$id('error-note') || !$id('error-note').textContent, $id('error-note') && $id('error-note').textContent);
 check('标的输入框已回填', !!($id('stock-input') && $id('stock-input').value), $id('stock-input') && $id('stock-input').value);
-check('结果区已显示（去掉 hidden）', !!($id('result') && !$id('result').classList.contains('hidden')));
-check('称号已颁发', !!($id('rank-title') && $id('rank-title').textContent && $id('rank-title').textContent !== '韭菜中的韭菜'),
-  $id('rank-title') && $id('rank-title').textContent);
-check('总盈亏有数字', !!($id('hero-profit') && /\d/.test($id('hero-profit').textContent)), $id('hero-profit') && $id('hero-profit').textContent);
-check('年化收益率有数字', !!($id('hero-annual') && /%/.test($id('hero-annual').textContent)), $id('hero-annual') && $id('hero-annual').textContent);
-check('一句话总结已渲染', !!($id('verdict') && $id('verdict').innerHTML.length > 40));
-check('明细表已渲染', !!($id('detail-table') && $id('detail-table').innerHTML.length > 200));
-check('成就列表已渲染', !!($id('ach-list') && $id('ach-list').innerHTML.length > 20));
-check('图表容器已插入 SVG', !!($id('chart') && $id('chart').children.length > 0));
-check('年度柱状渲染', !!($id('year-bars') && $id('year-bars').children.length > 0));
+// 注意：垫片只解析标签、不解析标签内的文本，所以这里断言的全是"结构/类名/是否渲染过"，
+// 而不是文案内容（文案在真实浏览器里另有 screenshot 与 check-validity 覆盖）。
+check('初始化后不显示结果（结果必须由用户按下按钮才揭晓）',
+  !!($id('result') && !$id('result').classList.contains('result-shown')), '结果区已可见');
+check('初始化后显示引导占位', !!($id('placeholder') && !$id('placeholder').classList.contains('hidden')));
+check('首屏预演确实已完成（参数校验路径跑过一遍）',
+  !!(win.__DCA_STATE__ && win.__DCA_STATE__.previewReady && !win.__DCA_STATE__.hasShownResult));
+check('首屏静默预演没有渲染结果（称号与明细仍为空壳）',
+  !!($id('rank-title') && $id('rank-title').textContent === '' && $id('detail-table').innerHTML === '' && $id('ach-list').innerHTML === ''));
+check('计算按钮初始可用且未进入计算态', !!($id('calc-btn') && !$id('calc-btn').disabled));
 check('数据来源提示已写出', !!($id('data-meta') && $id('data-meta').textContent.includes('真实历史月度行情')),
   $id('data-meta') && $id('data-meta').textContent);
 check('预设按钮已生成', !!($id('presets') && $id('presets').children.length >= 5), `${$id('presets') && $id('presets').children.length} 个`);
@@ -379,6 +404,37 @@ check('预设按钮已生成', !!($id('presets') && $id('presets').children.leng
     `max=${amt.getAttribute('max')}`);
 }
 
+/** 等结果揭晓（run() 现在是异步的） */
+async function waitForShown(timeout = 3000) {
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    if ($id('result').classList.contains('result-shown')) return true;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return false;
+}
+/** 等整个计算彻底落定：结果已揭晓且按钮恢复可用（揭晓后还有一小段收尾动画） */
+async function waitForSettled(timeout = 4000) {
+  const shown = await waitForShown(timeout);
+  const t0 = Date.now();
+  while (Date.now() - t0 < timeout) {
+    if (!$id('calc-btn').disabled) return shown;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  return shown;
+}
+/**
+ * 模拟用户按下"计算"。按钮是 type=submit，真实浏览器会触发表单提交，
+ * 所以这里也走 submit 路径（app.js 只在 form 上绑 submit，避免重复计算）。
+ */
+async function clickCalc() {
+  $id('form').dispatch('submit');
+  return waitForShown();
+}
+
+// 关键前提：在按下任何一次计算之前，结果区必须还不可见
+check('按下计算前结果不可见', !$id('result').classList.contains('result-shown'));
+
 // 点击每个预设按钮，验证都能算出结果且数字自洽
 const presets = ($id('presets') && $id('presets').children) || [];
 let presetOk = 0;
@@ -386,7 +442,7 @@ for (const btn of presets) {
   const label = btn.textContent;
   try {
     btn.dispatch('click');
-    await new Promise((r) => setTimeout(r, 30));
+    await clickCalc();
     const profitText = $id('hero-profit').textContent;
     const annual = $id('hero-annual').textContent;
     const title = $id('rank-title').textContent;
@@ -399,10 +455,19 @@ for (const btn of presets) {
 }
 check(`全部 ${presets.length} 个预设剧本都能算出结果`, presetOk === presets.length, `成功 ${presetOk}/${presets.length}`);
 
-// 工具：模拟用户点击"计算"按钮。按钮是 type=submit，真实浏览器会触发表单提交，
-// 所以这里也走 submit 路径（app.js 只在 form 上绑了 submit，避免重复计算）。
-const form = $id('form');
-const clickCalc = () => form.dispatch('submit');
+// 首次计算必须先跑一遍完整的仪式：结果出现、称号颁发
+check('按下计算后结果出现', await clickCalc());
+
+// 揭晓之后：结果区的内容都渲染出来了
+check('称号已颁发', !!($id('rank-title') && $id('rank-title').textContent),
+  `rank-title=${$id('rank-title') && $id('rank-title').textContent}`);
+check('总盈亏有数字', !!($id('hero-profit') && /\d/.test($id('hero-profit').textContent)), $id('hero-profit') && $id('hero-profit').textContent);
+check('年化收益率有数字', !!($id('hero-annual') && /%/.test($id('hero-annual').textContent)), $id('hero-annual') && $id('hero-annual').textContent);
+check('一句话总结已渲染', !!($id('verdict') && $id('verdict').innerHTML.length > 40));
+check('明细表已渲染', !!($id('detail-table') && $id('detail-table').innerHTML.length > 200));
+check('成就列表已渲染', !!($id('ach-list') && $id('ach-list').innerHTML.length > 20));
+check('图表容器已插入 SVG', !!($id('chart') && $id('chart').children.length > 0));
+check('年度柱状渲染', !!($id('year-bars') && $id('year-bars').children.length > 0));
 
 // 切换标的（含别名搜索）与极端参数
 const input = $id('stock-input');
@@ -432,8 +497,7 @@ input.value = '600519';
 input.dispatch('input');
 $id('start-year').value = '2026'; $id('start-month').value = '09';
 $id('end-year').value = '2026'; $id('end-month').value = '10';
-$id('amount').value = '1';
-clickCalc();
+$id('amount').value = '1'; await clickCalc();
 await new Promise((r) => setTimeout(r, 30));
 check('极端小额 + 2 个月区间也能出结果或给出友好提示',
   !$id('error-note').textContent || $id('error-note').textContent.includes('算不出来') || $id('error-note').textContent.includes('区间'),
@@ -442,8 +506,7 @@ check('极端小额 + 2 个月区间也能出结果或给出友好提示',
 // 单期（起 = 止）：年化不能退化成 "—"
 $id('amount').value = '3000';
 $id('start-year').value = '2020'; $id('start-month').value = '01';
-$id('end-year').value = '2020'; $id('end-month').value = '01';
-clickCalc();
+$id('end-year').value = '2020'; $id('end-month').value = '01'; await clickCalc();
 await new Promise((r) => setTimeout(r, 30));
 check('起止同月（只有 1 笔成交）也能给出年化而不是 "—"',
   $id('hero-annual').textContent.includes('%'), `年化=${$id('hero-annual').textContent}`);
@@ -451,26 +514,28 @@ check('起止同月（只有 1 笔成交）也能给出年化而不是 "—"',
 // 超范围金额：不能把结果污染成 Infinity
 $id('start-year').value = '2016'; $id('start-month').value = '01';
 $id('end-year').value = '2026'; $id('end-month').value = '10';
-$id('amount').value = '1e308';
-clickCalc();
+$id('amount').value = '1e308'; await clickCalc();
 await new Promise((r) => setTimeout(r, 30));
 const hugeProfit = $id('hero-profit').textContent;
 check('超大金额被夹到上限，不出现 Infinity/NaN',
   !/Infinity|NaN/.test(hugeProfit) && !/Infinity|NaN/.test($id('hero-value').textContent),
   `盈亏=${hugeProfit} 市值=${$id('hero-value').textContent}`);
 
-// 手续费开关
-$id('amount').value = '3000';
-$id('start-year').value = '2018'; $id('start-month').value = '01';
-$id('end-year').value = '2026'; $id('end-month').value = '10';
-clickCalc();
-await new Promise((r) => setTimeout(r, 30));
+// 手续费开关：改了参数不会自动重算，必须先按下计算（这正是本次改动的核心行为）
+// 先切到"非减少动态效果"分支，才能观察到"过期标记"这套交互
+win._reduceMotion = false;
 const beforeFee = $id('hero-value').textContent;
 $id('fee-toggle').checked = true;
 $id('fee-toggle').dispatch('change');
-await new Promise((r) => setTimeout(r, 30));
+check('改参数（手续费开关）后旧结果被标记为过期，且按钮提示重新计算',
+  $id('result').classList.contains('result-stale'), '未标记过期');
+check('过期时按钮文案提示重新计算', $id('calc-btn').textContent.includes('重新计算'), $id('calc-btn').textContent);
+const staleValue = $id('hero-value').textContent;
+check('未按计算时结果数字保持不变（不再实时刷新）', staleValue === beforeFee, `${beforeFee} -> ${staleValue}`);
+await clickCalc();
 const afterFee = $id('hero-value').textContent;
-check('开启手续费后页面重算且不报错', !$id('error-note').textContent, $id('error-note').textContent);
+check('按下计算后过期标记被清除', !$id('result').classList.contains('result-stale'));
+check('开启手续费后重新计算且不报错', !$id('error-note').textContent, $id('error-note').textContent);
 check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeFee} -> ${afterFee}`);
 
 // 截止月语义（卖出离场 / 继续持有）：两种口径必须都能选，且结果确实不同
@@ -487,11 +552,9 @@ check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeF
   $id('amount').value = '3000';
   $id('start-year').value = '2016'; $id('start-month').value = '01';
   $id('end-year').value = '2020'; $id('end-month').value = '01';
-  clickCalc(); // 真实浏览器里下拉框会触发 change 事件，垫片不会，所以显式重算
-  await new Promise((r) => setTimeout(r, 30));
 
   segLiq.dispatch('click');
-  await new Promise((r) => setTimeout(r, 30));
+  await clickCalc(); // 切换口径后必须重新计算，结果才会更新
   const liqValue = $id('hero-value').textContent;
   const liqAnnual = $id('hero-annual').textContent;
   const liqBanner = $id('mode-banner').innerHTML;
@@ -500,7 +563,7 @@ check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeF
   check('卖出口径下按钮为选中态', segLiq.classList.contains('active') && segLiq.getAttribute('aria-checked') === 'true');
 
   segHold.dispatch('click');
-  await new Promise((r) => setTimeout(r, 30));
+  await clickCalc();
   const holdValue = $id('hero-value').textContent;
   const holdAnnual = $id('hero-annual').textContent;
   const holdBanner = $id('mode-banner').innerHTML;
@@ -520,11 +583,11 @@ check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeF
   // 截止月 = 数据最新月时，应提示两种口径等价，且结果一致
   $id('end-year').value = '2026'; $id('end-month').value = '10';
   segLiq.dispatch('click');
-  await new Promise((r) => setTimeout(r, 30));
+  await clickCalc();
   const lastLiq = $id('hero-value').textContent;
   const lastLiqAnnual = $id('hero-annual').textContent;
   segHold.dispatch('click');
-  await new Promise((r) => setTimeout(r, 30));
+  await clickCalc();
   check('截止月=最新月时两种口径结果相同',
     $id('hero-value').textContent === lastLiq && $id('hero-annual').textContent === lastLiqAnnual,
     `卖出 ${lastLiq}/${lastLiqAnnual} vs 持有 ${$id('hero-value').textContent}/${$id('hero-annual').textContent}`);
@@ -533,10 +596,48 @@ check('手续费开关产生可观察变化', beforeFee !== afterFee, `${beforeF
 
   // 恢复回默认口径，避免影响后续断言
   segLiq.dispatch('click');
-  await new Promise((r) => setTimeout(r, 30));
+  await clickCalc();
 }
 
-// 恶意/损坏的分享链接：不能让页面进入非法状态
+// ── 揭晓仪式本身：关掉"减少动态效果"，验证计算动画真的会演 ──
+// 注意：这一段必须放在最后（或之后立刻把 _reduceMotion 还原），
+// 因为它依赖"结果不会立即出现"，而后面的 hashchange 用例会触发重算。
+{
+  win._reduceMotion = false; // 走动画分支
+  $id('amount').value = '3000';
+  $id('start-year').value = '2016'; $id('start-month').value = '01';
+  $id('end-year').value = '2026'; $id('end-month').value = '10';
+  $id('form').dispatch('submit');
+
+  // 按下后立刻：加载动画出现、结果被收回、按钮进入计算中
+  await new Promise((r) => setTimeout(r, 60));
+  check('计算中会显示加载动画', !$id('loader').classList.contains('hidden'), 'loader 未出现');
+  check('计算中结果被收回（不会露出上一轮内容）', !$id('result').classList.contains('result-shown'));
+  check('计算中按钮被禁用', $id('calc-btn').disabled);
+  check('加载动画有步骤列表', ($id('loader-steps') && $id('loader-steps').children.length >= 3),
+    `${$id('loader-steps') && $id('loader-steps').children.length} 步`);
+
+  await new Promise((r) => setTimeout(r, 900));
+  check('动画进行中进度条已推进', parseFloat($id('loader-fill').style.width || '0') > 0,
+    `width=${$id('loader-fill').style.width}`);
+
+  const shown = await waitForSettled(6000);
+  check('动画结束后结果揭晓', shown);
+  check('揭晓后加载动画隐藏', $id('loader').classList.contains('hidden'));
+  check('揭晓后按钮恢复可用', !$id('calc-btn').disabled);
+  check('揭晓后称号卡播放了登场动画', $id('rank-badge').classList.contains('reveal'));
+  check('揭晓后数字卡播放了登场动画',
+    $$('#result .hero-card').some((c) => c.classList.contains('reveal')));
+  check('动画分支下结果数字正常', /\d/.test($id('hero-profit').textContent), $id('hero-profit').textContent);
+
+  win._reduceMotion = true; // 还原，避免影响后续用例
+}
+
+// ── 恶意/损坏的分享链接：不能让页面进入非法状态 ──
+// 这里必须用"减少动态效果"分支：hashchange 会触发 onParamChanged 重算，
+// 走动画分支的话结果要等动画结束才出现，断言会读到旧值。
+// （这也是为什么这段要放在动画测试之后，并在动画测试结束时还原 _reduceMotion。）
+win._reduceMotion = true;
 const hashCases = [
   '#c=600519&s=9999-99&e=0000-00&a=-5',
   '#c=600519&s=abc&e=def&a=NaN',
@@ -551,7 +652,9 @@ for (const h of hashCases) {
   locationStub.hash = h;
   try {
     win.dispatchEvent('hashchange');
+    // hashchange 的重算在"减少动态效果"下是同步的，但仍等一拍让事件跑完
     await new Promise((r) => setTimeout(r, 30));
+    await waitForShown(1000);
     const note = $id('error-note').textContent;
     const startY = $id('start-year').value;
     const startM = $id('start-month').value;
@@ -570,6 +673,13 @@ check(`恶意/损坏分享链接 ${hashCases.length} 例均被安全兜底`, has
 locationStub.hash = '';
 
 console.log(`\n无头启动测试：${problems.length === 0 ? '全部通过' : problems.length + ' 项失败'}`);
+// 退出前排掉所有挂起的定时器句柄：动画用到的 setInterval/setTimeout 若没清干净，
+// Node 进程会一直等下去（这正是发现"兜底定时器没清理"的原因）。
+try {
+  const handles = process._getActiveHandles ? process._getActiveHandles() : [];
+  const timers = handles.filter((h) => h && h.constructor && /Timeout/.test(h.constructor.name));
+  if (timers.length) console.log(`[warn] 退出时仍有 ${timers.length} 个挂起的定时器`);
+} catch { /* 忽略 */ }
 if (problems.length) {
   for (const p of problems) console.log('  - ' + p);
   process.exit(1);
