@@ -101,15 +101,31 @@ npm test
 
 ## 📦 部署到 GitHub Pages
 
-1. 把整个仓库推到 GitHub。
+本项目已部署在 **https://sirotailss.github.io/a-share-dca/**（仓库 `SirotailSS/a-share-dca`，默认分支 `main`）。
+
+首次部署步骤：
+
+1. 把整个仓库推到 GitHub（**默认分支名用 `main`**，下文都以此为例）。
 2. 仓库 **Settings → Pages → Build and deployment → Source** 选 **GitHub Actions**。
-3. 推送到 `main` 或 `master`，`.github/workflows/deploy.yml` 会自动：
+   ⚠️ 这一步必须在**触发工作流之前**完成 —— 否则 `actions/configure-pages` 会报
+   "Get Pages site failed"，工作流红掉（我们踩过这个坑）。
+3. 推送到 `main`，`.github/workflows/deploy.yml` 会自动：
    跑一遍自检（保证解码、引擎、称号都没坏）→ 上传 `docs/` → 发布。
 
-> 也可以用最省事的经典方式：Source 选 `Deploy from a branch`，分支选 `main`、目录选 `/docs`。
-> 两种方式都行，`docs/` 里没有任何需要构建的东西。
->
+> 备选方案：Source 选 `Deploy from a branch`，分支选 `main`、目录选 **`/docs`**
+> （**绝对不能选 `/ (root)`**，根目录没有 `index.html`，GitHub 会用 `README.md`
+> 渲染出一页"Readme"，我们就遇到过这个坑）。
+> 两种模式**互斥**：选了分支模式，Actions 工作流即使成功也不会生效。
+
 > ⚠️ 注意：GitHub Pages 对**私有仓库**需要付费计划；免费账户请把仓库设为 Public。
+
+日常更新只需：
+
+```bash
+git add -A && git commit -m "说明" && git push
+```
+
+工作流会自动重新自检并发布，不用再进 Pages 设置。
 
 发布体积（全部静态资源，实测）：原始 233 KB，gzip 后 **84.4 KB**（压缩比 2.76x）。
 其中 `stocks.js` 134 KB / `style.css` 16 KB / 5 个 JS 模块合计 70 KB。
