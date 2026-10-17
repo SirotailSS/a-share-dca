@@ -1,0 +1,54 @@
+# ============================================================
+# Netlify 部署配置
+# ============================================================
+# 这个项目是**纯静态站点**：发布目录就是 docs/，里面是现成的
+# HTML/CSS/JS + 预生成的数据，不需要任何打包步骤。
+#
+# 但 Netlify 一旦在仓库根检测到 package.json，就会默认执行
+# `npm run build`；而项目原本没有 build 脚本，于是直接报
+#   npm ERR! Missing script: "build"
+# 并让整个部署失败。这是把它搬到 Netlify 时最常见的坑。
+#
+# 这里的做法：把 build 脚本定义成"跑一遍自检"，
+# 既避免 Missing script，又让构建阶段变成一道质量闸门 ——
+# 自检不过就不发布，坏代码上不了线。
+# （同一套自检在 GitHub Actions 的 ubuntu + Node 20 上已稳定通过。）
+
+[build]
+  command = "npm run build"
+  # 发布目录是 docs/，不是默认的仓库根，也不是 dist/
+  publish = "docs"
+
+[build.environment]
+  # 与 GitHub Actions 工作流保持一致，避免 Node 版本差异导致的意外
+  NODE_VERSION = "20"
+
+# ---- 缓存策略 ----
+# JS/CSS/数据都带内容更新，给个短缓存 + 必须回源校验，
+# 避免改了文件但访客看到旧版。
+[[headers]]
+  for = "/js/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/css/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/data/*"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "public, max-age=0, must-revalidate"
+
+# ---- 基础安全头 ----
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"

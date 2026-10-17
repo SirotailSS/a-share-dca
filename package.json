@@ -4,8 +4,9 @@
   "private": true,
   "description": "A股定投模拟器 · 纯静态网页，用真实历史行情回测你的定投收益并颁发称号与成就",
   "type": "module",
-  "homepage": "https://example.github.io/a-share-dca/",
+  "homepage": "https://sirotailss.github.io/a-share-dca/",
   "scripts": {
+    "build": "node tools/selftest.mjs",
     "build:db": "node tools/build-db.mjs",
     "build:db:offline": "node tools/build-db.mjs --offline",
     "test": "node tools/selftest.mjs && node tools/check-dom.mjs && node tools/check-style.mjs && node tools/check-achievements.mjs && node tools/headless.mjs",

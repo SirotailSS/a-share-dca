@@ -62,7 +62,7 @@
 
 ```
 a-share-dca/
-├── docs/                    ← GitHub Pages 的发布根目录
+├── docs/                    ← GitHub Pages 的发布根目录（Netlify 也用这个目录）
 │   ├── index.html
 │   ├── css/style.css
 │   ├── data/stocks.js       ← 自动生成的历史行情库（勿手改）
@@ -126,6 +126,29 @@ git add -A && git commit -m "说明" && git push
 ```
 
 工作流会自动重新自检并发布，不用再进 Pages 设置。
+
+## ☁️ 部署到 Netlify（备选）
+
+Netlify 同样能托管，而且国内访问通常比 `*.github.io` 稳定。但有几个**专门针对本项目的坑**：
+
+| 坑 | 现象 | 解决 |
+| --- | --- | --- |
+| 仓库有 `package.json` 但没有 `build` 脚本 | `npm ERR! Missing script: "build"`，构建失败 | 已在 `package.json` 补上 `build`（跑自检），`netlify.toml` 里指定用它 |
+| 没有 `netlify.toml` | 发布目录默认是仓库根，根目录没有 `index.html` → 404 | 已加 `netlify.toml`，`publish = "docs"` |
+| 发布目录误设为根目录 | 和 GitHub Pages 那次一样，显示成 Readme | 发布目录必须是 **`docs`** |
+
+仓库里已有 `netlify.toml`，正确配置如下（无需在 UI 里另填）：
+
+```toml
+[build]
+  command = "npm run build"   # 跑 121 项自检，不通过就不发布
+  publish = "docs"            # 关键：发布 docs/，不是仓库根
+```
+
+导入步骤：Netlify → **Add new site → Import an existing project** → 选 GitHub 仓库 →
+Build command 填 `npm run build`、Publish directory 填 **`docs`**（如果 UI 里留空，会读 `netlify.toml`）。
+
+> ⚠️ 若 UI 里之前填过别的值（比如 `dist` 或 `/`），请改成与上面一致，否则会覆盖配置文件。
 
 发布体积（全部静态资源，实测）：原始 233 KB，gzip 后 **84.4 KB**（压缩比 2.76x）。
 其中 `stocks.js` 134 KB / `style.css` 16 KB / 5 个 JS 模块合计 70 KB。
